@@ -10,6 +10,8 @@ from typing import List, Dict, Optional, Any
 from requests.auth import HTTPBasicAuth
 
 from app.config.settings import settings
+from app.utils.retry import retry_api_call, TRANSIENT_EXCEPTIONS
+from app.utils.pii_masker import mask_api_key
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +37,8 @@ class FreshdeskClient:
 
         self.headers = {"Content-Type": "application/json"}
 
-        logger.info(f"Freshdesk client initialized → {self.base_url}")
+        # Log with masked API key for security
+        logger.info(f"Freshdesk client initialized → {self.base_url} (key: {mask_api_key(api_key)})")
 
     # --------------------------------------------------------------------
     # Rate Limit Handler
@@ -47,97 +50,81 @@ class FreshdeskClient:
             time.sleep(wait)
 
     # --------------------------------------------------------------------
-    # GET Ticket
+    # GET Ticket (with retry)
     # --------------------------------------------------------------------
+    @retry_api_call
     def get_ticket(self, ticket_id: int, params: Optional[Dict] = None) -> Dict[str, Any]:
         """Fetch a Freshdesk ticket by ID"""
         url = f"{self.base_url}/tickets/{ticket_id}"
         params = params or {}
 
-        try:
-            response = requests.get(
-                url,
-                auth=self.auth,
-                params=params,
-                headers=self.headers,
-                timeout=self.timeout
-            )
-            self._handle_rate_limit(response)
-            response.raise_for_status()
-            return response.json()
-
-        except requests.exceptions.RequestException as e:
-            logger.error(f"[Freshdesk] Error fetching ticket {ticket_id}: {e}")
-            raise
+        response = requests.get(
+            url,
+            auth=self.auth,
+            params=params,
+            headers=self.headers,
+            timeout=self.timeout
+        )
+        self._handle_rate_limit(response)
+        response.raise_for_status()
+        return response.json()
 
     # --------------------------------------------------------------------
-    # GET Conversations
+    # GET Conversations (with retry)
     # --------------------------------------------------------------------
+    @retry_api_call
     def get_ticket_conversations(self, ticket_id: int) -> List[Dict[str, Any]]:
         url = f"{self.base_url}/tickets/{ticket_id}/conversations"
 
-        try:
-            response = requests.get(
-                url,
-                auth=self.auth,
-                headers=self.headers,
-                timeout=self.timeout
-            )
-            self._handle_rate_limit(response)
-            response.raise_for_status()
-            return response.json()
-
-        except Exception as e:
-            logger.error(f"[Freshdesk] Error fetching conversations: {e}")
-            return []
+        response = requests.get(
+            url,
+            auth=self.auth,
+            headers=self.headers,
+            timeout=self.timeout
+        )
+        self._handle_rate_limit(response)
+        response.raise_for_status()
+        return response.json()
 
     # --------------------------------------------------------------------
-    # Add Note
+    # Add Note (with retry)
     # --------------------------------------------------------------------
+    @retry_api_call
     def add_note(self, ticket_id: int, body: str, private: bool = True) -> Dict[str, Any]:
         url = f"{self.base_url}/tickets/{ticket_id}/notes"
 
         payload = {"body": body, "private": private}
 
-        try:
-            response = requests.post(
-                url,
-                json=payload,
-                auth=self.auth,
-                headers=self.headers,
-                timeout=self.timeout,
-            )
-            self._handle_rate_limit(response)
-            response.raise_for_status()
-            time.sleep(0.4)
-            return response.json()
-
-        except Exception as e:
-            logger.error(f"[Freshdesk] Error adding note to ticket {ticket_id}: {e}")
-            raise
+        response = requests.post(
+            url,
+            json=payload,
+            auth=self.auth,
+            headers=self.headers,
+            timeout=self.timeout,
+        )
+        self._handle_rate_limit(response)
+        response.raise_for_status()
+        time.sleep(0.4)
+        return response.json()
 
     # --------------------------------------------------------------------
-    # Update Ticket
+    # Update Ticket (with retry)
     # --------------------------------------------------------------------
+    @retry_api_call
     def update_ticket(self, ticket_id: int, **fields) -> Dict[str, Any]:
         url = f"{self.base_url}/tickets/{ticket_id}"
 
-        try:
-            response = requests.put(
-                url,
-                json=fields,
-                auth=self.auth,
-                headers=self.headers,
-                timeout=self.timeout,
-            )
-            self._handle_rate_limit(response)
-            response.raise_for_status()
-            time.sleep(0.4)
-            return response.json()
-
-        except Exception as e:
-            logger.error(f"[Freshdesk] Error updating ticket {ticket_id}: {e}")
-            raise
+        response = requests.put(
+            url,
+            json=fields,
+            auth=self.auth,
+            headers=self.headers,
+            timeout=self.timeout,
+        )
+        self._handle_rate_limit(response)
+        response.raise_for_status()
+        time.sleep(0.4)
+        return response.json()
 
     # --------------------------------------------------------------------
     # Extract Ticket Fields (Normalized)

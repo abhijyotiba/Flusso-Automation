@@ -12,6 +12,7 @@ from app.graph.state import TicketState
 from app.utils.audit import add_audit_event
 from app.utils.attachment_processor import process_all_attachments
 from app.clients.freshdesk_client import get_freshdesk_client
+from app.utils.pii_masker import mask_email, mask_name
 from app.utils.detailed_logger import (
     start_workflow_log, log_node_start, log_node_complete, get_current_log
 )
@@ -137,7 +138,8 @@ def fetch_ticket_from_freshdesk(state: TicketState) -> Dict[str, Any]:
         logger.info(f"{STEP_NAME} | ✅ Completed in {duration:.2f}s")
         logger.info(f"{STEP_NAME} | Subject: {updates['ticket_subject'][:80]}...")
         logger.info(f"{STEP_NAME} | Text length: {len(description)} chars | Has images: {has_image} ({len(images)} files)")
-        logger.info(f"{STEP_NAME} | Requester: {updates['requester_name']} <{updates['requester_email']}>")
+        # Log with PII masking for privacy compliance
+        logger.info(f"{STEP_NAME} | Requester: {mask_name(updates['requester_name'])} <{mask_email(updates['requester_email'])}>")
         logger.info(f"{STEP_NAME} | Tags: {updates['tags']}")
         
         # Update workflow log with ticket info

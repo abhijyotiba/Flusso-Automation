@@ -9,6 +9,8 @@ from pinecone import Pinecone
 
 from app.config.settings import settings
 from app.graph.state import RetrievalHit
+from app.utils.retry import retry_api_call
+from app.utils.pii_masker import mask_api_key
 
 logger = logging.getLogger(__name__)
 
@@ -42,8 +44,18 @@ class PineconeClient:
             self.tickets_index = None
 
     # ---------------------------------------------------------
-    # Image Search
+    # Image Search (with retry)
     # ---------------------------------------------------------
+    @retry_api_call
+    def _query_image_index(self, vector: List[float], top_k: int, filter_dict: Optional[Dict[str, Any]]):
+        """Internal method for querying image index with retry logic."""
+        return self.image_index.query(
+            vector=vector,
+            top_k=top_k,
+            include_metadata=True,
+            filter=filter_dict
+        )
+
     def query_images(
         self,
         vector: List[float],
@@ -62,12 +74,7 @@ class PineconeClient:
             elif not isinstance(vector, list):
                 vector = list(vector)
             
-            results = self.image_index.query(
-                vector=vector,
-                top_k=top_k,
-                include_metadata=True,
-                filter=filter_dict
-            )
+            results = self._query_image_index(vector, top_k, filter_dict)
 
             hits: List[RetrievalHit] = []
 
@@ -96,8 +103,18 @@ class PineconeClient:
             return []
 
     # ---------------------------------------------------------
-    # Past Tickets Search
+    # Past Tickets Search (with retry)
     # ---------------------------------------------------------
+    @retry_api_call
+    def _query_tickets_index(self, vector: List[float], top_k: int, filter_dict: Optional[Dict[str, Any]]):
+        """Internal method for querying tickets index with retry logic."""
+        return self.tickets_index.query(
+            vector=vector,
+            top_k=top_k,
+            include_metadata=True,
+            filter=filter_dict
+        )
+
     def query_past_tickets(
         self,
         vector: List[float],
@@ -116,12 +133,7 @@ class PineconeClient:
             elif not isinstance(vector, list):
                 vector = list(vector)
             
-            results = self.tickets_index.query(
-                vector=vector,
-                top_k=top_k,
-                include_metadata=True,
-                filter=filter_dict
-            )
+            results = self._query_tickets_index(vector, top_k, filter_dict)
 
             hits: List[RetrievalHit] = []
 

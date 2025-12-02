@@ -4,13 +4,16 @@ Webhook endpoint for Freshdesk ticket automation
 """
 
 import logging
+import hashlib
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from diskcache import Cache
 
 from app.graph.graph_builder import build_graph
 from app.graph.state import TicketState
+from app.utils.pii_masker import mask_email, mask_name
 
 # ---------------------------------------------------
 # LOGGING CONFIG
@@ -23,6 +26,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 graph = None  # Global graph instance
+webhook_cache = None  # Deduplication cache
 
 
 # ---------------------------------------------------
@@ -30,14 +34,21 @@ graph = None  # Global graph instance
 # ---------------------------------------------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global graph
+    global graph, webhook_cache
     logger.info("🚀 Starting Flusso Workflow Automation...")
+
+    # Initialize deduplication cache
+    webhook_cache = Cache(".cache/webhook_dedup")
+    logger.info("✅ Webhook deduplication cache initialized")
 
     graph = build_graph()
     logger.info("✅ LangGraph workflow initialized")
 
     yield
 
+    # Cleanup
+    if webhook_cache:
+        webhook_cache.close()
     logger.info("🛑 Shutting down Flusso Workflow Automation...")
 
 
@@ -75,6 +86,7 @@ async def root():
 
 @app.get("/health")
 async def health_check():
+    """Basic health check - returns quickly."""
     return {
         "status": "healthy",
         "graph_ready": graph is not None,
@@ -82,8 +94,82 @@ async def health_check():
     }
 
 
+@app.get("/health/detailed")
+async def detailed_health_check():
+    """
+    Detailed health check that verifies all external dependencies.
+    Use for monitoring/alerting systems.
+    """
+    from app.config.settings import settings
+    import httpx
+    
+    health_status = {
+        "status": "healthy",
+        "service": "Flusso Workflow Automation",
+        "graph_ready": graph is not None,
+        "dependencies": {}
+    }
+    
+    # Check Freshdesk API
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(
+                f"{settings.FRESHDESK_DOMAIN}/api/v2/tickets",
+                auth=(settings.FRESHDESK_API_KEY, "X"),
+                params={"per_page": 1}
+            )
+            health_status["dependencies"]["freshdesk"] = {
+                "status": "healthy" if resp.status_code == 200 else "degraded",
+                "response_code": resp.status_code
+            }
+    except Exception as e:
+        health_status["dependencies"]["freshdesk"] = {
+            "status": "unhealthy",
+            "error": str(e)
+        }
+        health_status["status"] = "degraded"
+    
+    # Check Pinecone
+    try:
+        from app.clients.pinecone_client import get_pinecone_client
+        pc_client = get_pinecone_client()
+        # Just verify client exists (actual index check would be too slow)
+        health_status["dependencies"]["pinecone"] = {
+            "status": "healthy" if pc_client else "unhealthy"
+        }
+    except Exception as e:
+        health_status["dependencies"]["pinecone"] = {
+            "status": "unhealthy",
+            "error": str(e)
+        }
+        health_status["status"] = "degraded"
+    
+    # Check Gemini
+    try:
+        from google import genai
+        from app.config.settings import settings
+        # Verify API key exists and client can be created
+        client = genai.Client(api_key=settings.GEMINI_API_KEY)
+        health_status["dependencies"]["gemini"] = {
+            "status": "healthy" if settings.GEMINI_API_KEY and client else "unhealthy"
+        }
+    except Exception as e:
+        health_status["dependencies"]["gemini"] = {
+            "status": "unhealthy",
+            "error": str(e)
+        }
+        health_status["status"] = "degraded"
+    
+    # Check webhook deduplication cache
+    health_status["dependencies"]["webhook_cache"] = {
+        "status": "healthy" if webhook_cache else "unhealthy"
+    }
+    
+    return health_status
+
+
 # ---------------------------------------------------
-# FRESHDESK WEBHOOK
+# FRESHDESK WEBHOOK (with deduplication)
 # ---------------------------------------------------
 @app.post("/freshdesk/webhook")
 async def freshdesk_webhook(request: Request):
@@ -98,18 +184,37 @@ async def freshdesk_webhook(request: Request):
     }
     """
 
-    global graph
+    global graph, webhook_cache
     if graph is None:
         logger.warning("⚠ Graph was not initialized — rebuilding...")
         graph = build_graph()
 
     try:
         payload = await request.json()
-        logger.info(f"📨 Received webhook: {payload}")
-
         ticket_id = payload.get("ticket_id")
+        
         if not ticket_id:
             raise HTTPException(status_code=400, detail="Missing ticket_id in payload")
+
+        # ---------------------------------------------------
+        # DEDUPLICATION CHECK
+        # Prevent processing same ticket update multiple times
+        # ---------------------------------------------------
+        updated_at = payload.get("updated_at") or payload.get("freshdesk_webhook", {}).get("ticket_updated_at", "")
+        dedup_key = hashlib.sha256(f"{ticket_id}:{updated_at}".encode()).hexdigest()
+        
+        if webhook_cache and webhook_cache.get(dedup_key):
+            logger.warning(f"⚠️ Duplicate webhook detected for ticket #{ticket_id}, skipping")
+            return JSONResponse(
+                content={"status": "duplicate", "ticket_id": ticket_id, "message": "Already processed"},
+                status_code=200
+            )
+        
+        # Mark as processing (expires in 1 hour)
+        if webhook_cache:
+            webhook_cache.set(dedup_key, True, expire=3600)
+        
+        logger.info(f"📨 Received webhook for ticket #{ticket_id}")
 
         # ---------------------------------------------------
         # Initialize minimal safe TicketState
@@ -193,10 +298,24 @@ async def freshdesk_webhook(request: Request):
 
     except Exception as e:
         logger.error(f"❌ Workflow error: {e}", exc_info=True)
+        # Remove from dedup cache on error so it can be retried
+        if webhook_cache and dedup_key:
+            webhook_cache.delete(dedup_key)
         return JSONResponse(
             content={"error": str(e), "workflow_completed": False},
             status_code=500,
         )
+
+
+# ---------------------------------------------------
+# SIMPLE WEBHOOK (alias for testing)
+# ---------------------------------------------------
+@app.post("/webhook")
+async def simple_webhook(request: Request):
+    """
+    Simple webhook endpoint (alias for /freshdesk/webhook)
+    """
+    return await freshdesk_webhook(request)
 
 
 # ---------------------------------------------------
