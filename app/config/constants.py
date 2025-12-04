@@ -12,6 +12,7 @@ class ResolutionStatus(str, Enum):
     AI_UNRESOLVED = "AI_UNRESOLVED"
     LOW_CONFIDENCE_MATCH = "LOW_CONFIDENCE_MATCH"
     VIP_RULE_FAILURE = "VIP_RULE_FAILURE"
+    SKIPPED = "SKIPPED"  # For PO/auto-reply tickets
 
 
 class CustomerType(str, Enum):
@@ -23,13 +24,59 @@ class CustomerType(str, Enum):
 
 
 class TicketCategory(str, Enum):
-    """Ticket classification categories"""
-    WARRANTY = "warranty"
-    PRODUCT_ISSUE = "product_issue"
-    INSTALLATION_HELP = "install_help"
-    BILLING = "billing"
-    GENERAL = "general"
-    SPAM = "spam"
+    """Ticket classification categories - Enhanced with 14 categories"""
+    # === SKIP CATEGORIES (no workflow execution) ===
+    PURCHASE_ORDER = "purchase_order"      # PO emails with PDF invoices
+    AUTO_REPLY = "auto_reply"              # Out of office, vacation replies
+    SPAM = "spam"                          # Spam, irrelevant messages
+    
+    # === FULL WORKFLOW CATEGORIES ===
+    PRODUCT_ISSUE = "product_issue"        # Product defects, malfunctions
+    REPLACEMENT_PARTS = "replacement_parts" # Part replacement requests
+    WARRANTY_CLAIM = "warranty_claim"      # Warranty claims
+    MISSING_PARTS = "missing_parts"        # Missing parts from orders
+    
+    # === FLEXIBLE RAG CATEGORIES (text default, vision if images) ===
+    PRODUCT_INQUIRY = "product_inquiry"    # Product specs, availability
+    INSTALLATION_HELP = "installation_help" # Installation questions
+    FINISH_COLOR = "finish_color"          # Finish/color questions
+    
+    # === SPECIAL HANDLING CATEGORIES ===
+    SHIPPING_TRACKING = "shipping_tracking" # Order status inquiries
+    RETURN_REFUND = "return_refund"        # Return/refund requests
+    FEEDBACK_SUGGESTION = "feedback_suggestion" # Product suggestions
+    GENERAL = "general"                    # General inquiries
+
+
+# Categories that should skip the workflow entirely
+SKIP_CATEGORIES = [
+    TicketCategory.PURCHASE_ORDER.value,
+    TicketCategory.AUTO_REPLY.value,
+    TicketCategory.SPAM.value,
+]
+
+# Categories that always need full workflow (Vision + Text + Past)
+FULL_WORKFLOW_CATEGORIES = [
+    TicketCategory.PRODUCT_ISSUE.value,
+    TicketCategory.REPLACEMENT_PARTS.value,
+    TicketCategory.WARRANTY_CLAIM.value,
+    TicketCategory.MISSING_PARTS.value,
+]
+
+# Categories with flexible RAG (text default, vision if has images)
+FLEXIBLE_RAG_CATEGORIES = [
+    TicketCategory.PRODUCT_INQUIRY.value,
+    TicketCategory.INSTALLATION_HELP.value,
+    TicketCategory.FINISH_COLOR.value,
+]
+
+# Categories with special handling
+SPECIAL_HANDLING_CATEGORIES = [
+    TicketCategory.SHIPPING_TRACKING.value,
+    TicketCategory.RETURN_REFUND.value,
+    TicketCategory.FEEDBACK_SUGGESTION.value,
+    TicketCategory.GENERAL.value,
+]
 
 
 class TicketPriority(int, Enum):
@@ -82,20 +129,62 @@ CLIP_EMBEDDING_DIM = 512
 # SYSTEM PROMPTS
 # ==========================================
 
-ROUTING_SYSTEM_PROMPT = """You are a routing agent for customer support tickets.
+ROUTING_SYSTEM_PROMPT = """You are a routing agent for Flusso Kitchen & Bath customer support tickets.
 
-Classify the ticket into one of these categories:
-- warranty: Warranty claims, warranty extensions, coverage questions
-- product_issue: Product defects, malfunctions, quality issues
-- install_help: Installation questions, setup guidance, technical support
-- billing: Pricing questions, payment issues, invoices
-- general: General inquiries, product information
-- spam: Spam, irrelevant messages
+Classify the ticket into ONE of these categories:
 
-Respond ONLY with valid JSON in this exact format:
-{"category": "<category_name>"}
+=== SKIP CATEGORIES (automated emails, no response needed) ===
+- purchase_order: Purchase orders, PO emails, invoice PDFs, order confirmations from dealers/distributors
+  Examples: "Purchase Order #12345", "PO 50218", "Order confirmation", emails with PDF attachments that are just orders
+  
+- auto_reply: Out of office replies, vacation auto-responses, automated system messages
+  Examples: "Out of Office", "I am currently away", "Automatic reply"
+  
+- spam: Spam, marketing emails, completely irrelevant messages
 
-Do not include any explanation or additional text."""
+=== FULL SUPPORT CATEGORIES (need detailed response) ===
+- product_issue: Product defects, malfunctions, quality issues, broken products
+  Examples: "My faucet is leaking", "The handle broke", "Product not working"
+  
+- replacement_parts: Requests for replacement parts, spare parts
+  Examples: "Need replacement cartridge", "Looking for spare handle", "Part broke need new one"
+  
+- warranty_claim: Warranty claims, warranty questions, coverage inquiries
+  Examples: "Is this covered under warranty?", "Warranty replacement needed"
+  
+- missing_parts: Parts missing from delivered orders
+  Examples: "Missing screws from order", "Package incomplete", "Parts not included"
+
+=== PRODUCT INFORMATION CATEGORIES ===
+- product_inquiry: Product specifications, availability, pricing questions
+  Examples: "Do you have this in stock?", "What are the dimensions?", "Price quote needed"
+  
+- installation_help: Installation questions, setup guidance, technical support
+  Examples: "How do I install this?", "Need installation instructions", "Mounting help"
+  
+- finish_color: Questions about finishes, colors, product variants
+  Examples: "Available in chrome?", "What finishes do you have?", "Color options"
+
+=== SPECIAL HANDLING CATEGORIES ===
+- shipping_tracking: Order status, shipping updates, delivery inquiries
+  Examples: "Where is my order?", "Tracking number?", "When will it ship?"
+  
+- return_refund: Return requests, refund inquiries, RGA requests
+  Examples: "I want to return this", "Need RGA", "Refund request"
+  
+- feedback_suggestion: Product suggestions, feedback, reviews
+  Examples: "I suggest you make...", "Feature request", "Product improvement idea"
+  
+- general: General inquiries that don't fit other categories
+
+IMPORTANT DETECTION RULES:
+1. If subject contains "Purchase Order", "PO #", "PO:", "Order #" AND has PDF attachment → purchase_order
+2. If subject starts with "Re:" or "Fw:" - look at the ACTUAL content, not just the forward chain
+3. If email is clearly automated (vacation reply, out of office) → auto_reply
+4. Look for specific product model numbers (like 160.1000CP, HS1006, etc.) to identify product-related tickets
+
+Respond ONLY with valid JSON:
+{"category": "<category_name>", "confidence": <0.0-1.0>, "reasoning": "<brief explanation>"}"""
 
 ORCHESTRATION_SYSTEM_PROMPT = """You are a support orchestration agent that helps human agents by analyzing customer tickets with retrieved knowledge.
 
@@ -150,19 +239,30 @@ Even a likely product match helps the agent investigate faster.
 
 Assess product match confidence based on the ticket and retrieved information.
 
+CRITICAL CHECKS:
+1. **Category Match**: Does the retrieved product category match what the customer is asking about?
+   - If customer asks about "shower door hinges" but results show "Sink Faucets" → LOW confidence (0.1-0.2)
+   - Visual similarity alone is NOT enough - the product TYPE must be relevant
+   
+2. **Product Type Relevance**: 
+   - Customer asking about hinges should see hinges, not faucets
+   - Customer asking about faucets should see faucets, not shower doors
+   
+3. **Even with high visual similarity scores**, if the product category is WRONG, confidence should be LOW
+
 Consider:
-- Is there ANY product that seems related to the query?
-- Could the retrieved products help narrow down the search?
-- Even if not exact, is the product category correct?
+- Is the product CATEGORY correct for what the customer needs?
+- Could the retrieved products actually help solve the customer's problem?
+- Are we showing relevant products or just visually similar but wrong category items?
 
 Respond ONLY with valid JSON in this exact format:
-{"confidence": <number between 0.0 and 1.0>}
+{"confidence": <number between 0.0 and 1.0>, "reasoning": "<brief explanation>"}
 
 Where:
-- 0.0-0.2 = No relevant products found at all
+- 0.0-0.2 = Wrong product category OR no relevant products found
 - 0.3-0.5 = Related product category but uncertain exact model
-- 0.6-0.8 = Likely correct product, minor uncertainty
-- 0.9-1.0 = Clear, confident product identification"""
+- 0.6-0.8 = Correct category and likely correct product, minor uncertainty
+- 0.9-1.0 = Clear, confident product identification with matching category"""
 
 VIP_COMPLIANCE_PROMPT = """You are a VIP rule compliance checker.
 
@@ -222,4 +322,136 @@ SYSTEM_TAGS = [
     "VIP_RULE_FAILURE",
     "AI_PROCESSED",
     "NEEDS_HUMAN_REVIEW",
+    "PO_RECEIVED",           # For purchase order tickets
+    "AUTO_REPLY_SKIPPED",    # For auto-reply tickets
+    "RETURN_REQUEST",        # For return/refund tickets
+    "FEEDBACK_RECEIVED",     # For feedback/suggestion tickets
 ]
+
+
+# ==========================================
+# RETURN POLICY (Flusso Kitchen & Bath)
+# ==========================================
+
+RETURN_POLICY = """
+FLUSSO KITCHEN & BATH - DEALER RETURN POLICY
+
+Returns are accepted per the following schedule:
+
+| Time Period (Days) | Restocking Fee |
+|--------------------|----------------|
+| Less than 45 days  | 15%            |
+| 45 - 90 days       | 25%            |
+| 91 - 180 days      | 50%            |
+| Over 180 days      | No returns accepted |
+
+IMPORTANT NOTES:
+- All returns require an RGA (Return Goods Authorization) number
+- Products must be in original, unopened packaging
+- Custom or special order items may not be eligible for return
+- Defective products may be covered under warranty instead of return policy
+
+To request an RGA, please provide:
+1. Original PO/Order number
+2. Product model number(s)
+3. Reason for return
+4. Date of original purchase
+"""
+
+
+# ==========================================
+# CATEGORY-SPECIFIC RESPONSE PROMPTS
+# ==========================================
+
+PURCHASE_ORDER_NOTE = """📦 PURCHASE ORDER RECEIVED
+
+This ticket is a Purchase Order submission. No customer response needed.
+
+Action: Forward to order processing team for entry into system.
+"""
+
+FEEDBACK_SUGGESTION_PROMPT = """You are responding to a customer who has provided product feedback or a suggestion.
+
+Your response should:
+1. Thank the customer sincerely for their feedback
+2. Acknowledge their specific suggestion/feedback
+3. Let them know it has been forwarded to the product team
+4. Keep it brief and appreciative
+
+DO NOT:
+- Make promises about implementing their suggestion
+- Provide timelines for changes
+- Commit to specific product improvements
+
+Generate a warm, appreciative response."""
+
+FEEDBACK_PRIVATE_NOTE_TEMPLATE = """⚠️ PRODUCT SUGGESTION - PLEASE REVIEW AND LOG
+
+Customer Feedback Summary:
+{feedback_summary}
+
+Action Required:
+- Review customer's suggestion
+- Log in product feedback tracking system
+- Consider forwarding to product development team if relevant
+"""
+
+RETURN_REFUND_PROMPT = """You are helping a customer with a return or refund request.
+
+IMPORTANT: Include the return policy information but DO NOT make definitive commitments.
+Always recommend the customer verify with the policy and that a human agent will confirm eligibility.
+
+Return Policy Reference:
+- Less than 45 days: 15% restocking fee
+- 45-90 days: 25% restocking fee  
+- 91-180 days: 50% restocking fee
+- Over 180 days: Returns not accepted
+
+Your response should:
+1. Acknowledge their return request
+2. Ask for order number/PO if not provided
+3. Mention the general return policy timeframes
+4. State that a team member will verify eligibility and issue RGA if applicable
+5. Add [VERIFY] tags for any specific claims about their eligibility
+
+DO NOT:
+- Guarantee the return will be accepted
+- State exact fees without knowing purchase date
+- Promise immediate refunds"""
+
+RETURN_PRIVATE_NOTE_TEMPLATE = """⚠️ RETURN/REFUND REQUEST - VERIFICATION NEEDED
+
+Customer Request: Return/Refund
+Order/PO Number: {order_number}
+Product(s): {products}
+
+Action Required:
+1. Verify original purchase date
+2. Check if within 180-day return window
+3. Confirm products are eligible (not custom/special order)
+4. Calculate applicable restocking fee
+5. Issue RGA number if approved
+
+⚠️ PLEASE CONFIRM RETURN POLICY DETAILS BEFORE RESPONDING
+"""
+
+SHIPPING_TRACKING_PROMPT = """You are helping a customer track their order.
+
+Your response should:
+1. Acknowledge their shipping inquiry
+2. If order number is provided, mention you're checking the status
+3. If no order number, ask for PO number or order confirmation
+4. Let them know a team member will provide tracking information
+
+Provide helpful, reassuring response while a human agent looks up the actual tracking."""
+
+SHIPPING_PRIVATE_NOTE_TEMPLATE = """📦 SHIPPING/TRACKING INQUIRY
+
+Order/PO Number: {order_number}
+
+Action Required:
+- Look up order in system
+- Check current shipping status
+- Provide tracking number to customer
+- Update with estimated delivery if available
+"""

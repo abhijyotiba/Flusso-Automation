@@ -1,6 +1,7 @@
 """
 LangGraph Builder
 Constructs complete workflow with corrected multimodal RAG loop
+Includes skip routing for PO/auto-reply/spam tickets
 """
 
 import logging
@@ -27,22 +28,97 @@ from app.nodes.response.draft_response import draft_final_response
 from app.nodes.response.resolution_logic import decide_tags_and_resolution
 from app.nodes.freshdesk_update import update_freshdesk_ticket
 from app.nodes.audit_log import write_audit_log
+from app.utils.audit import add_audit_event
 
 logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------
-#  CORRECT MULTIMODAL RAG ROUTER
+#  SKIP TICKET HANDLER NODE
+# ---------------------------------------------------------------------
+def skip_ticket_handler(state: TicketState) -> dict:
+    """
+    Handle tickets that should skip the full workflow.
+    Categories: purchase_order, auto_reply, spam
+    
+    Actions:
+    - Set appropriate tags
+    - Prepare private note
+    - Mark as skipped (no public response)
+    """
+    category = state.get("ticket_category", "unknown")
+    skip_reason = state.get("skip_reason", "Category marked for skip")
+    skip_note = state.get("skip_private_note", "")
+    
+    logger.info(f"[SKIP_HANDLER] Processing skip for category: {category}")
+    logger.info(f"[SKIP_HANDLER] Reason: {skip_reason}")
+    
+    # Determine tags based on category
+    tag_map = {
+        "purchase_order": ["purchase_order", "po_received", "no_action_needed"],
+        "auto_reply": ["auto_reply", "no_action_needed"],
+        "spam": ["spam", "no_action_needed"]
+    }
+    
+    tags = tag_map.get(category, ["skipped"])
+    
+    # Use skip note if provided, otherwise generate one
+    if not skip_note:
+        note_map = {
+            "purchase_order": "📦 Purchase Order/Invoice received. No customer response required.",
+            "auto_reply": "🤖 Auto-reply detected. No action needed.",
+            "spam": "🚫 Spam/promotional email detected. No action needed."
+        }
+        skip_note = note_map.get(category, f"Ticket skipped: {skip_reason}")
+    
+    logger.info(f"[SKIP_HANDLER] Tags: {tags}")
+    logger.info(f"[SKIP_HANDLER] Private note: {skip_note}")
+    
+    return {
+        "suggested_tags": tags,
+        "private_note": skip_note,
+        "generated_reply": None,  # No public response for skipped tickets
+        "resolution_decision": "skip_workflow",
+        "resolution_reason": skip_reason,
+        "skip_workflow_applied": True,
+        "audit_events": add_audit_event(
+            state,
+            event="skip_ticket_handler",
+            event_type="SKIP",
+            details={
+                "category": category,
+                "reason": skip_reason,
+                "tags": tags,
+                "private_note": skip_note
+            }
+        )["audit_events"]
+    }
+
+
+# ---------------------------------------------------------------------
+#  CORRECT MULTIMODAL RAG ROUTER (with skip support)
 # ---------------------------------------------------------------------
 def route_after_routing(state: TicketState) -> Literal[
-    "vision", "text_rag", "past_tickets", "customer_lookup"
+    "skip_handler", "vision", "text_rag", "past_tickets", "customer_lookup"
 ]:
     """
-    Multimodal RAG controller:
-        - Run all relevant pipelines in sequence
+    Multimodal RAG controller with skip support:
+        - First check if ticket should skip workflow entirely
+        - Then run all relevant pipelines in sequence
         - Only move to customer lookup when ALL applicable RAGs done
     """
+    
+    # Check for skip first (PO, auto-reply, spam)
+    should_skip = state.get("should_skip", False)
+    if should_skip:
+        category = state.get("ticket_category", "unknown")
+        logger.info(f"[ROUTER] 🚀 SKIPPING WORKFLOW for category: {category}")
+        return "skip_handler"
 
+    # Check RAG requirements from routing agent
+    requires_vision = state.get("category_requires_vision", True)
+    requires_text = state.get("category_requires_text_rag", True)
+    
     has_image = state.get("has_image", False)
     has_text = state.get("has_text", False)
 
@@ -50,14 +126,14 @@ def route_after_routing(state: TicketState) -> Literal[
     ran_text = state.get("ran_text_rag", False)
     ran_past = state.get("ran_past_tickets", False)
 
-    # 1. Run vision first if images exist
-    if has_image and not ran_vision:
-        logger.info("[ROUTER] Running vision pipeline")
+    # 1. Run vision first if images exist AND category requires it
+    if has_image and requires_vision and not ran_vision:
+        logger.info("[ROUTER] Running vision pipeline (category requires)")
         return "vision"
 
-    # 2. Then run text RAG if text exists
-    if has_text and not ran_text:
-        logger.info("[ROUTER] Running text RAG pipeline")
+    # 2. Then run text RAG if text exists AND category requires it
+    if has_text and requires_text and not ran_text:
+        logger.info("[ROUTER] Running text RAG pipeline (category requires)")
         return "text_rag"
 
     # 3. Always check past tickets (once)
@@ -79,12 +155,17 @@ def route_after_orchestration(
     """
     If not enough information after orchestration,
     re-run the missing RAG modes before continuing.
+    Uses category-based RAG requirements.
     """
 
     enough = state.get("enough_information", False)
     if enough:
         logger.info("[ROUTER] Orchestration: enough info → proceed to checks")
         return "check_enough_info"
+
+    # Check category-based RAG requirements
+    requires_vision = state.get("category_requires_vision", True)
+    requires_text = state.get("category_requires_text_rag", True)
 
     # If not enough info → run missing RAG
     has_image = state.get("has_image", False)
@@ -93,9 +174,9 @@ def route_after_orchestration(
     ran_text = state.get("ran_text_rag", False)
     ran_past = state.get("ran_past_tickets", False)
 
-    if has_image and not ran_vision:
+    if has_image and requires_vision and not ran_vision:
         return "vision"
-    if has_text and not ran_text:
+    if has_text and requires_text and not ran_text:
         return "text_rag"
     if not ran_past:
         return "past_tickets"
@@ -127,17 +208,23 @@ def route_after_enough_info_check(
 def route_after_hallucination_guard(
     state: TicketState,
 ) -> Literal["confidence_check", "draft_response"]:
+    """
+    Always run confidence_check to evaluate product match quality.
+    High hallucination risk will still be considered in resolution_logic.
+    """
     from app.config.settings import settings
     
     risk = state.get("hallucination_risk", 1.0)
     threshold = settings.hallucination_risk_threshold
 
+    # ALWAYS run confidence check - it's crucial for product matching
+    # The resolution_logic node will handle the final decision based on both metrics
     if risk <= threshold:
         logger.info(f"[ROUTER] Low hallucination risk ({risk:.2f} <= {threshold}) → confidence check")
-        return "confidence_check"
-
-    logger.info(f"[ROUTER] High hallucination risk ({risk:.2f} > {threshold}) → draft fallback")
-    return "draft_response"
+    else:
+        logger.info(f"[ROUTER] High hallucination risk ({risk:.2f} > {threshold}) → still running confidence check")
+    
+    return "confidence_check"
 
 
 # ---------------------------------------------------------------------
@@ -151,6 +238,9 @@ def build_graph() -> StateGraph:
     # ------------------- ADD NODES -------------------
     graph.add_node("fetch_ticket", fetch_ticket_from_freshdesk)
     graph.add_node("routing", classify_ticket_category)
+    
+    # Skip handler for PO/auto-reply/spam
+    graph.add_node("skip_handler", skip_ticket_handler)
 
     graph.add_node("vision", process_vision_pipeline)
     graph.add_node("text_rag", text_rag_pipeline)
@@ -178,17 +268,21 @@ def build_graph() -> StateGraph:
     # ------------------- BASE FLOW -------------------
     graph.add_edge("fetch_ticket", "routing")
 
-    # ------------------- MULTIMODAL RAG LOOP -------------------
+    # ------------------- MULTIMODAL RAG LOOP (with skip support) -------------------
     graph.add_conditional_edges(
         "routing",
         route_after_routing,
         {
+            "skip_handler": "skip_handler",  # NEW: Skip path
             "vision": "vision",
             "text_rag": "text_rag",
             "past_tickets": "past_tickets",
             "customer_lookup": "customer_lookup",
         },
     )
+    
+    # Skip handler goes directly to freshdesk_update (bypass entire workflow)
+    graph.add_edge("skip_handler", "freshdesk_update")
 
     # After vision/text/past → go back to routing for next step
     graph.add_edge("vision", "routing")
@@ -222,15 +316,10 @@ def build_graph() -> StateGraph:
         },
     )
 
-    # ------------------- HALLUCINATION ROUTING -------------------
-    graph.add_conditional_edges(
-        "hallucination_guard",
-        route_after_hallucination_guard,
-        {
-            "confidence_check": "confidence_check",
-            "draft_response": "draft_response",
-        },
-    )
+    # ------------------- HALLUCINATION → CONFIDENCE (ALWAYS) -------------------
+    # Always run confidence check - it's critical for product matching
+    # Resolution logic will consider both hallucination risk AND confidence
+    graph.add_edge("hallucination_guard", "confidence_check")
 
     # ------------------- CONFIDENCE → VIP → DRAFT -------------------
     graph.add_edge("confidence_check", "vip_compliance")

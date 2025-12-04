@@ -1,27 +1,135 @@
 """
 Routing Agent Node
 Classifies ticket using LLM or fallback rules
+Enhanced with skip detection for PO/auto-reply tickets
 CLEAN + PRODUCTION READY VERSION
 """
 
 import logging
 import time
+import re
 from typing import Dict, Any
 
 from app.graph.state import TicketState
 from app.utils.audit import add_audit_event
 from app.clients.llm_client import call_llm
-from app.config.constants import ROUTING_SYSTEM_PROMPT
+from app.config.constants import (
+    ROUTING_SYSTEM_PROMPT, 
+    SKIP_CATEGORIES,
+    PURCHASE_ORDER_NOTE
+)
 
 logger = logging.getLogger(__name__)
 
 STEP_NAME = "2️⃣ ROUTING_AGENT"
 
 
+def _detect_purchase_order(subject: str, text: str, attachments: list) -> bool:
+    """
+    Fast rule-based detection for Purchase Order tickets.
+    These are very common and have clear patterns.
+    """
+    subject_lower = subject.lower()
+    
+    # Strong PO indicators in subject
+    po_patterns = [
+        r'purchase\s*order',
+        r'\bpo\s*#?\s*\d+',
+        r'\bpo\s*:',
+        r'order\s*#?\s*\d+',
+        r'\[.*po\]',
+        r'p\.o\.',
+    ]
+    
+    for pattern in po_patterns:
+        if re.search(pattern, subject_lower):
+            # Check if it has PDF attachment (common for POs)
+            has_pdf = any(
+                att.get('name', '').lower().endswith('.pdf') 
+                for att in (attachments or [])
+            )
+            if has_pdf:
+                return True
+            # Even without PDF, strong PO subject is enough
+            if re.search(r'purchase\s*order', subject_lower):
+                return True
+    
+    return False
+
+
+def _detect_auto_reply(subject: str, text: str) -> bool:
+    """Detect out-of-office and auto-reply messages."""
+    combined = (subject + " " + text).lower()
+    
+    auto_patterns = [
+        r'out\s*of\s*(the\s*)?office',
+        r'automatic\s*reply',
+        r'auto[\s-]?reply',
+        r'i\s*am\s*(currently\s*)?(away|out|on\s*vacation)',
+        r'will\s*respond\s*when\s*i\s*return',
+        r'ooo\s*:',
+    ]
+    
+    for pattern in auto_patterns:
+        if re.search(pattern, combined):
+            return True
+    
+    return False
+
+
+def _check_skip_category(category: str) -> tuple:
+    """
+    Check if a category should skip the full workflow.
+    Returns: (should_skip, skip_reason, skip_private_note)
+    """
+    if category not in SKIP_CATEGORIES:
+        return False, None, None
+    
+    skip_notes = {
+        "purchase_order": PURCHASE_ORDER_NOTE,
+        "auto_reply": "🤖 Auto-reply detected - no action needed",
+        "spam": "🚫 Spam/promotional email detected - no action needed"
+    }
+    
+    skip_reasons = {
+        "purchase_order": "Purchase Order/Invoice received",
+        "auto_reply": "Auto-reply/Out of Office message",
+        "spam": "Spam or promotional content"
+    }
+    
+    return True, skip_reasons.get(category, f"Skip category: {category}"), skip_notes.get(category, "")
+
+
+def _determine_rag_requirements(category: str, has_images: bool) -> tuple:
+    """
+    Determine which RAG pipelines are needed based on category.
+    Returns: (requires_vision, requires_text_rag)
+    
+    Categories:
+    - FULL_WORKFLOW (product_issue, replacement_parts, warranty_claim, missing_parts): Both RAGs
+    - FLEXIBLE_RAG (product_inquiry, installation_help, finish_color): Text RAG + Vision if images
+    - SPECIAL (shipping_tracking, return_refund, feedback_suggestion, general): Text RAG only
+    """
+    from app.config.constants import FULL_WORKFLOW_CATEGORIES, FLEXIBLE_RAG_CATEGORIES
+    
+    if category in FULL_WORKFLOW_CATEGORIES:
+        # Always run both for product-related issues
+        return True, True
+    
+    elif category in FLEXIBLE_RAG_CATEGORIES:
+        # Text RAG always, vision only if images present
+        return has_images, True
+    
+    else:
+        # Special handling categories - text RAG only
+        return False, True
+
+
 def classify_ticket_category(state: TicketState) -> Dict[str, Any]:
     """
     Classify the ticket category using LLM.
     Falls back to rule-based classification on errors.
+    Detects skip categories (PO, auto-reply) for fast processing.
     """
     start_time = time.time()
     
@@ -33,8 +141,63 @@ def classify_ticket_category(state: TicketState) -> Dict[str, Any]:
     text = state.get("ticket_text", "") or ""
     tags = state.get("tags", [])
     ticket_type = state.get("ticket_type")
+    attachments = state.get("attachment_summary", []) or []
     
     logger.info(f"{STEP_NAME} | Input: subject={len(subject)} chars, text={len(text)} chars, tags={tags}")
+
+    # -------------------------------------------
+    # FAST PATH: Detect Purchase Orders (rule-based)
+    # -------------------------------------------
+    if _detect_purchase_order(subject, text, attachments):
+        duration = time.time() - start_time
+        logger.info(f"{STEP_NAME} | ⚡ Fast detection: Purchase Order ticket")
+        logger.info(f"{STEP_NAME} | ✅ Classified as 'purchase_order' (skipping workflow)")
+        
+        return {
+            "ticket_category": "purchase_order",
+            "should_skip": True,
+            "skip_reason": "Purchase Order - no customer response needed",
+            "skip_private_note": PURCHASE_ORDER_NOTE,
+            "category_requires_vision": False,
+            "category_requires_text_rag": False,
+            "audit_events": add_audit_event(
+                state,
+                event="classify_ticket_category",
+                event_type="CLASSIFICATION",
+                details={
+                    "category": "purchase_order",
+                    "reason": "fast_po_detection",
+                    "should_skip": True
+                }
+            )["audit_events"]
+        }
+    
+    # -------------------------------------------
+    # FAST PATH: Detect Auto-Reply/OOO
+    # -------------------------------------------
+    if _detect_auto_reply(subject, text):
+        duration = time.time() - start_time
+        logger.info(f"{STEP_NAME} | ⚡ Fast detection: Auto-reply/Out of Office")
+        logger.info(f"{STEP_NAME} | ✅ Classified as 'auto_reply' (skipping workflow)")
+        
+        return {
+            "ticket_category": "auto_reply",
+            "should_skip": True,
+            "skip_reason": "Auto-reply/Out of Office message",
+            "skip_private_note": "🤖 Auto-reply detected - no action needed",
+            "category_requires_vision": False,
+            "category_requires_text_rag": False,
+            "audit_events": add_audit_event(
+                state,
+                event="classify_ticket_category",
+                event_type="CLASSIFICATION",
+                details={
+                    "category": "auto_reply",
+                    "reason": "fast_auto_reply_detection",
+                    "should_skip": True
+                }
+            )["audit_events"]
+        }
 
     # -------------------------------------------
     # Handle empty tickets
@@ -43,6 +206,11 @@ def classify_ticket_category(state: TicketState) -> Dict[str, Any]:
         logger.warning(f"{STEP_NAME} | ⚠️ Empty ticket content → defaulting to 'general'")
         return {
             "ticket_category": "general",
+            "should_skip": False,
+            "skip_reason": None,
+            "skip_private_note": None,
+            "category_requires_vision": False,
+            "category_requires_text_rag": True,
             "audit_events": add_audit_event(
                 state,
                 event="classify_ticket_category",
@@ -96,8 +264,26 @@ def classify_ticket_category(state: TicketState) -> Dict[str, Any]:
         logger.info(f"{STEP_NAME} | Reasoning: {reasoning[:150]}..." if reasoning else f"{STEP_NAME} | No reasoning provided")
         logger.info(f"{STEP_NAME} | Completed in {duration:.2f}s")
 
+        # Check if this category should skip the workflow
+        should_skip, skip_reason, skip_note = _check_skip_category(category)
+        
+        # Determine RAG requirements based on category
+        # Check has_image flag (set by fetch_ticket) or ticket_images list
+        has_images = state.get("has_image", False) or bool(state.get("ticket_images"))
+        requires_vision, requires_text = _determine_rag_requirements(category, has_images)
+        
+        if should_skip:
+            logger.info(f"{STEP_NAME} | 🚀 SKIP WORKFLOW: {skip_reason}")
+        else:
+            logger.info(f"{STEP_NAME} | 📋 RAG Requirements: vision={requires_vision}, text={requires_text}")
+
         return {
             "ticket_category": category,
+            "should_skip": should_skip,
+            "skip_reason": skip_reason,
+            "skip_private_note": skip_note,
+            "category_requires_vision": requires_vision,
+            "category_requires_text_rag": requires_text,
             "audit_events": add_audit_event(
                 state,
                 event="classify_ticket_category",
@@ -107,7 +293,11 @@ def classify_ticket_category(state: TicketState) -> Dict[str, Any]:
                     "confidence": confidence,
                     "reasoning": reasoning,
                     "tags_used": len(tags) > 0,
-                    "ticket_type_used": ticket_type is not None
+                    "ticket_type_used": ticket_type is not None,
+                    "should_skip": should_skip,
+                    "skip_reason": skip_reason,
+                    "requires_vision": requires_vision,
+                    "requires_text_rag": requires_text
                 }
             )["audit_events"]
         }
@@ -120,8 +310,18 @@ def classify_ticket_category(state: TicketState) -> Dict[str, Any]:
         category = fallback_classification(subject, text, tags)
         logger.warning(f"{STEP_NAME} | Using fallback classification → '{category}'")
 
+        # Check skip and RAG requirements for fallback category too
+        should_skip, skip_reason, skip_note = _check_skip_category(category)
+        has_images = state.get("has_image", False) or bool(state.get("ticket_images"))
+        requires_vision, requires_text = _determine_rag_requirements(category, has_images)
+
         return {
             "ticket_category": category,
+            "should_skip": should_skip,
+            "skip_reason": skip_reason,
+            "skip_private_note": skip_note,
+            "category_requires_vision": requires_vision,
+            "category_requires_text_rag": requires_text,
             "audit_events": add_audit_event(
                 state,
                 event="classify_ticket_category",
@@ -129,7 +329,10 @@ def classify_ticket_category(state: TicketState) -> Dict[str, Any]:
                 details={
                     "category": category,
                     "error": str(e),
-                    "fallback_used": True
+                    "fallback_used": True,
+                    "should_skip": should_skip,
+                    "requires_vision": requires_vision,
+                    "requires_text_rag": requires_text
                 }
             )["audit_events"]
         }
@@ -139,20 +342,53 @@ def classify_ticket_category(state: TicketState) -> Dict[str, Any]:
 # FALLBACK CLASSIFIER (rule-based)
 # -------------------------------------------------------------
 def fallback_classification(subject: str, text: str, tags: list) -> str:
+    """Rule-based fallback when LLM fails. Uses our 14-category system."""
     content = (subject + " " + text).lower()
     tags_lower = [t.lower() for t in tags]
-
-    # Tag matches
+    
+    # -------------------------------------------
+    # SKIP categories (high priority)
+    # -------------------------------------------
+    
+    # Purchase Order detection
+    po_keywords = ["purchase order", "po #", "po#", "p.o.", "invoice", "order confirmation", 
+                   "order #", "order number", "payment received", "payment confirmation"]
+    if any(kw in content for kw in po_keywords):
+        return "purchase_order"
+    
+    # Auto-reply detection
+    auto_reply_keywords = ["auto-reply", "auto reply", "automatic reply", "out of office", 
+                          "out-of-office", "ooo", "away from office", "on vacation", 
+                          "be back", "i am currently out"]
+    if any(kw in content for kw in auto_reply_keywords):
+        return "auto_reply"
+    
+    # Spam detection
+    spam_keywords = ["unsubscribe", "click here to win", "lottery", "congratulations you won",
+                    "act now", "limited time offer", "free money"]
+    if any(kw in content for kw in spam_keywords):
+        return "spam"
+    
+    # -------------------------------------------
+    # FULL WORKFLOW categories
+    # -------------------------------------------
+    
+    # Tag-based matching
     tag_map = {
-        "warranty": "warranty",
-        "install": "installation_help",
-        "installation": "installation_help",
-        "return": "return_request",
-        "refund": "return_request",
+        "warranty": "warranty_claim",
         "defect": "product_issue",
         "broken": "product_issue",
         "damaged": "product_issue",
-        "complaint": "complaint"
+        "missing": "missing_parts",
+        "replacement": "replacement_parts",
+        "return": "return_refund",
+        "refund": "return_refund",
+        "install": "installation_help",
+        "installation": "installation_help",
+        "tracking": "shipping_tracking",
+        "shipping": "shipping_tracking",
+        "feedback": "feedback_suggestion",
+        "suggestion": "feedback_suggestion"
     }
 
     for t in tags_lower:
@@ -160,14 +396,33 @@ def fallback_classification(subject: str, text: str, tags: list) -> str:
             if key in t:
                 return cat
 
-    # Keyword matches
+    # -------------------------------------------
+    # Keyword-based matching
+    # -------------------------------------------
     keyword_map = {
-        "warranty": ["warranty", "guarantee"],
-        "product_issue": ["broken", "defective", "faulty", "damaged"],
-        "installation_help": ["install", "installation", "setup", "mount"],
-        "return_request": ["return", "refund", "exchange"],
-        "complaint": ["unhappy", "angry", "bad service"],
-        "general_inquiry": ["inquiry", "question", "information"]
+        # Full workflow
+        "product_issue": ["broken", "defective", "faulty", "damaged", "not working", 
+                         "cracked", "leaking", "leak", "dripping"],
+        "replacement_parts": ["replacement part", "spare part", "need part", "order part",
+                             "replacement for", "where can i get"],
+        "warranty_claim": ["warranty", "guarantee", "covered under", "warranty claim"],
+        "missing_parts": ["missing", "not included", "wasn't in the box", "didn't receive",
+                         "incomplete", "parts missing"],
+        
+        # Flexible categories
+        "product_inquiry": ["question about", "inquiry", "wondering about", "does this",
+                           "what is the", "how does", "is it compatible"],
+        "installation_help": ["install", "installation", "setup", "mount", "how to fit",
+                             "instructions", "assembly"],
+        "finish_color": ["finish", "color", "colour", "chrome", "nickel", "bronze",
+                        "brass", "matte", "polished", "brushed"],
+        
+        # Special handling
+        "shipping_tracking": ["tracking", "shipment", "delivery", "where is my order",
+                             "when will it arrive", "shipping status"],
+        "return_refund": ["return", "refund", "exchange", "money back", "send back"],
+        "feedback_suggestion": ["feedback", "suggestion", "recommend", "improve", 
+                               "great product", "love it", "disappointed"]
     }
 
     for category, keywords in keyword_map.items():

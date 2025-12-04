@@ -23,6 +23,11 @@ google-auth>=2.35.0
 google-cloud-storage>=2.18.0
 
 ##############################
+# Vertex AI (Production Embeddings)
+##############################
+google-cloud-aiplatform>=1.129.0
+
+##############################
 # Pinecone (Vector DB - New Package)
 ##############################
 pinecone>=5.0.0

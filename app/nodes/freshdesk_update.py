@@ -16,6 +16,73 @@ logger = logging.getLogger(__name__)
 STEP_NAME = "1️⃣6️⃣ FRESHDESK_UPDATE"
 
 
+def _handle_skipped_ticket(state: TicketState, ticket_id: int, start_time: float) -> Dict[str, Any]:
+    """
+    Handle tickets that skipped the full workflow (PO, auto-reply, spam).
+    Only adds private note + tags, no public response.
+    """
+    category = state.get("ticket_category", "unknown")
+    skip_reason = state.get("skip_reason", "Unknown")
+    private_note = state.get("private_note", "")
+    suggested_tags = state.get("suggested_tags", [])
+    
+    logger.info(f"{STEP_NAME} | 🚀 SKIP MODE: category={category}")
+    logger.info(f"{STEP_NAME} | Skip reason: {skip_reason}")
+    
+    client = get_freshdesk_client()
+    
+    try:
+        # Add private note explaining why skipped
+        if private_note:
+            logger.info(f"{STEP_NAME} | 📝 Adding skip private note")
+            note_start = time.time()
+            client.add_note(ticket_id, private_note, private=True)
+            logger.info(f"{STEP_NAME} | ✓ Private note added in {time.time() - note_start:.2f}s")
+        
+        # Update tags (merge with existing)
+        old_tags = state.get("tags") or []
+        merged_tags = sorted(list(set(old_tags + suggested_tags)))
+        
+        logger.info(f"{STEP_NAME} | 🏷 Updating tags: {old_tags} + {suggested_tags} → {merged_tags}")
+        tags_start = time.time()
+        client.update_ticket(ticket_id, tags=merged_tags)
+        logger.info(f"{STEP_NAME} | ✓ Tags updated in {time.time() - tags_start:.2f}s")
+        
+        duration = time.time() - start_time
+        logger.info(f"{STEP_NAME} | ✅ SKIPPED: ticket #{ticket_id} updated (no public response) in {duration:.2f}s")
+        
+        return {
+            "tags": merged_tags,
+            "resolution_status": "skipped",
+            "audit_events": add_audit_event(
+                state,
+                "update_freshdesk_ticket",
+                "SKIP",
+                {
+                    "ticket_id": ticket_id,
+                    "category": category,
+                    "skip_reason": skip_reason,
+                    "note_type": "private_only",
+                    "tags": merged_tags,
+                    "duration_seconds": duration,
+                },
+            )["audit_events"],
+        }
+        
+    except Exception as e:
+        duration = time.time() - start_time
+        logger.error(f"{STEP_NAME} | ❌ Error updating skipped ticket #{ticket_id}: {e}", exc_info=True)
+        
+        return {
+            "audit_events": add_audit_event(
+                state,
+                "update_freshdesk_ticket",
+                "ERROR",
+                {"ticket_id": ticket_id, "error": str(e), "skip_mode": True},
+            )["audit_events"]
+        }
+
+
 def update_freshdesk_ticket(state: TicketState) -> Dict[str, Any]:
     """Final step → push replies + tags to Freshdesk."""
     start_time = time.time()
@@ -25,6 +92,12 @@ def update_freshdesk_ticket(state: TicketState) -> Dict[str, Any]:
         ticket_id = int(state.get("ticket_id"))
     except Exception:
         raise ValueError("Invalid ticket_id in state")
+
+    # Check if this is a skipped ticket (PO, auto-reply, spam)
+    skip_workflow_applied = state.get("skip_workflow_applied", False)
+    
+    if skip_workflow_applied:
+        return _handle_skipped_ticket(state, ticket_id, start_time)
 
     status = state.get("resolution_status", ResolutionStatus.AI_UNRESOLVED.value)
     reply_text = state.get("final_response_public") or ""

@@ -63,10 +63,11 @@ app = FastAPI(
 )
 
 # Enable CORS for Freshdesk webhook calls
+# Note: When using allow_origins=["*"], credentials should be False for security
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # Freshdesk uses public IPs
-    allow_credentials=True,
+    allow_credentials=False,  # Must be False when allow_origins is wildcard
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -189,6 +190,9 @@ async def freshdesk_webhook(request: Request):
         logger.warning("⚠ Graph was not initialized — rebuilding...")
         graph = build_graph()
 
+    # Initialize dedup_key to None to avoid NameError in exception handler
+    dedup_key = None
+    
     try:
         payload = await request.json()
         ticket_id = payload.get("ticket_id")

@@ -127,6 +127,12 @@ def draft_final_response(state: TicketState) -> Dict[str, Any]:
     confidence = state.get("product_match_confidence", 0.0)
     vip_ok = state.get("vip_compliant", True)
     
+    # Vision quality metrics
+    vision_quality = state.get("vision_match_quality", "NO_MATCH")
+    vision_reason = state.get("vision_relevance_reason", "")
+    vision_matched_cat = state.get("vision_matched_category", "")
+    vision_expected_cat = state.get("vision_expected_category", "")
+    
     node_log.input_summary = {
         "subject": subject[:100],
         "ticket_text_length": len(ticket_text),
@@ -134,11 +140,40 @@ def draft_final_response(state: TicketState) -> Dict[str, Any]:
         "enough_info": enough_info,
         "hallucination_risk": risk,
         "product_confidence": confidence,
-        "vip_compliant": vip_ok
+        "vip_compliant": vip_ok,
+        "vision_quality": vision_quality
     }
     
     logger.info(f"{STEP_NAME} | 📥 Input: subject='{subject[:50]}...', context_len={len(context)}")
     logger.info(f"{STEP_NAME} | 📊 Metrics: enough_info={enough_info}, risk={risk:.2f}, confidence={confidence:.2f}, vip_ok={vip_ok}")
+    logger.info(f"{STEP_NAME} | 🖼 Vision: quality={vision_quality}")
+
+    # Build vision quality guidance for the LLM
+    vision_guidance = ""
+    if vision_quality == "CATEGORY_MISMATCH":
+        vision_guidance = f"""
+IMPORTANT - VISION MISMATCH DETECTED:
+The customer asked about '{vision_expected_cat}' but our image search found '{vision_matched_cat}'.
+DO NOT mention the mismatched products. Instead:
+- Acknowledge you received the image
+- Say you couldn't identify the specific product from the image
+- Ask for model number, product code, or other identifying information
+"""
+    elif vision_quality == "NO_MATCH":
+        vision_guidance = """
+IMPORTANT - NO IMAGE MATCH:
+Could not find a matching product from the attached image.
+- Acknowledge you received the image
+- Explain you couldn't find an exact match in the catalog
+- Ask for additional details (model number, where purchased, etc.)
+"""
+    elif vision_quality == "LOW":
+        vision_guidance = f"""
+NOTE - UNCERTAIN IMAGE MATCH:
+Visual matches have low confidence. Reason: {vision_reason}
+- Present any product suggestions tentatively
+- Ask customer to confirm if the suggested product is correct
+"""
 
     meta = f"""
 DECISION METRICS:
@@ -146,6 +181,8 @@ DECISION METRICS:
 - Hallucination Risk: {risk:.2f}
 - Product Confidence: {confidence:.2f}
 - VIP Compliant: {vip_ok}
+- Vision Match Quality: {vision_quality}
+{vision_guidance}
 """
 
     user_prompt = f"""CUSTOMER TICKET:

@@ -1,6 +1,7 @@
 """
 Context Builder Node
 Combines all retrieval results into unified context for LLM.
+With smart filtering for vision match quality.
 """
 
 import logging
@@ -17,6 +18,12 @@ def assemble_multimodal_context(state: TicketState) -> Dict[str, Any]:
     """
     Combine all retrieval results (text, image, past tickets, VIP rules)
     into a single formatted context string for the orchestration agent.
+    
+    Smart handling of vision results:
+    - HIGH quality: Include as confident product matches
+    - LOW quality: Include with uncertainty warning
+    - CATEGORY_MISMATCH: Exclude or mark as irrelevant
+    - NO_MATCH: Skip vision section
     """
     start_time = time.time()
     logger.info(f"{STEP_NAME} | ▶ Building unified context...")
@@ -35,20 +42,52 @@ def assemble_multimodal_context(state: TicketState) -> Dict[str, Any]:
                 f"{i}. **{title}** (score: {score:.2f})\n{content}\n"
             )
 
-    # ---------------- IMAGE RAG ----------------
+    # ---------------- IMAGE RAG (with quality filtering) ----------------
     image_hits: List[RetrievalHit] = state.get("image_retrieval_results", []) or []
+    vision_quality = state.get("vision_match_quality", "LOW")
+    vision_reason = state.get("vision_relevance_reason", "")
+    vision_matched_cat = state.get("vision_matched_category", "")
+    vision_expected_cat = state.get("vision_expected_category", "")
+    
     if image_hits:
-        sections.append("\n### PRODUCT MATCHES (VISUAL)\n")
-        for i, hit in enumerate(image_hits[:5], 1):
-            meta = hit.get("metadata", {}) or {}
-            product_title = meta.get("product_title", "Unknown Product")
-            model_no = meta.get("model_no", "N/A")
-            finish = meta.get("finish", "N/A")
-            score = hit.get("score", 0.0)
-            sections.append(
-                f"{i}. **{product_title}** (Model: {model_no}, Finish: {finish}) "
-                f"- Similarity: {score:.2f}\n"
-            )
+        if vision_quality == "HIGH":
+            # Confident match - include as reliable
+            sections.append("\n### PRODUCT MATCHES (VISUAL) ✅ HIGH CONFIDENCE\n")
+            sections.append("*These products match the customer's attached image and request.*\n")
+            _add_image_hits_to_context(sections, image_hits)
+            
+        elif vision_quality == "LOW":
+            # Uncertain - include with warning
+            sections.append("\n### PRODUCT MATCHES (VISUAL) ⚠️ LOW CONFIDENCE\n")
+            sections.append(f"*Note: {vision_reason}*\n")
+            sections.append("*These are visually similar products but relevance is uncertain. Verify before using.*\n")
+            _add_image_hits_to_context(sections, image_hits)
+            
+        elif vision_quality == "CATEGORY_MISMATCH":
+            # Wrong category - warn the LLM not to use these
+            sections.append("\n### VISUAL SEARCH RESULTS ❌ CATEGORY MISMATCH\n")
+            sections.append(f"**WARNING: The customer is asking about '{vision_expected_cat}' but visual search found '{vision_matched_cat}'.**\n")
+            sections.append("**DO NOT use these product matches in your response - they are the wrong product category.**\n")
+            sections.append(f"*Reason: {vision_reason}*\n")
+            # Still list them so agent can see, but clearly marked as wrong
+            sections.append("\n*Irrelevant matches (for reference only):*\n")
+            for i, hit in enumerate(image_hits[:2], 1):
+                meta = hit.get("metadata", {}) or {}
+                product_title = meta.get("product_title", "Unknown Product")
+                category = meta.get("product_category", "Unknown Category")
+                sections.append(f"  {i}. ~~{product_title}~~ (Category: {category}) - NOT RELEVANT\n")
+                
+        elif vision_quality == "NO_MATCH":
+            # No useful matches
+            sections.append("\n### VISUAL SEARCH RESULTS ❌ NO MATCH\n")
+            sections.append("*Could not identify the product from the attached image. Ask customer for more details.*\n")
+            if vision_reason:
+                sections.append(f"*Reason: {vision_reason}*\n")
+    
+    # Log vision handling
+    logger.info(f"{STEP_NAME} | 🖼 Vision quality: {vision_quality}")
+    if vision_quality == "CATEGORY_MISMATCH":
+        logger.warning(f"{STEP_NAME} | ⚠ Vision mismatch: expected '{vision_expected_cat}', got '{vision_matched_cat}'")
 
     # ---------------- PAST TICKETS ----------------
     past_hits: List[RetrievalHit] = state.get("past_ticket_results", []) or []
@@ -91,6 +130,7 @@ def assemble_multimodal_context(state: TicketState) -> Dict[str, Any]:
             "image_hits": len(image_hits),
             "past_hits": len(past_hits),
             "has_vip_rules": bool(vip_rules),
+            "vision_quality": vision_quality,
             "context_length": len(multimodal_context),
             "duration_seconds": duration,
         }
@@ -100,3 +140,27 @@ def assemble_multimodal_context(state: TicketState) -> Dict[str, Any]:
         "multimodal_context": multimodal_context,
         "audit_events": audit_events,
     }
+
+
+def _add_image_hits_to_context(sections: List[str], image_hits: List[RetrievalHit]) -> None:
+    """Helper to add image hits to context sections."""
+    for i, hit in enumerate(image_hits[:5], 1):
+        meta = hit.get("metadata", {}) or {}
+        product_title = meta.get("product_title", "Unknown Product")
+        model_no = meta.get("model_no", "N/A")
+        finish = meta.get("finish", "N/A")
+        category = meta.get("product_category", "Unknown Category")
+        sub_category = meta.get("sub_category", "")
+        collection = meta.get("collection", "")
+        score = hit.get("score", 0.0)
+        
+        category_info = f"{category}"
+        if sub_category:
+            category_info += f" > {sub_category}"
+        
+        sections.append(
+            f"{i}. **{product_title}** (Model: {model_no}, Finish: {finish})\n"
+            f"   Category: {category_info}\n"
+            f"   Collection: {collection}\n"
+            f"   Visual Similarity: {score:.2f}\n"
+        )

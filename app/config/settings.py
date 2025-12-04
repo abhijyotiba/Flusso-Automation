@@ -79,6 +79,21 @@ class Settings(BaseSettings):
     clip_pretrained: str = "openai"
     gpu_enabled: bool = False
     
+    # ==========================================
+    # VISION PIPELINE SETTINGS
+    # ==========================================
+    vision_min_similarity_threshold: float = 0.75  # Minimum score to consider a match valid
+    vision_category_validation: bool = True  # Enable LLM category validation
+    
+    # ==========================================
+    # VERTEX AI SETTINGS (production multimodal embeddings)
+    # Set USE_VERTEX_AI_EMBEDDINGS=true to use Vertex AI instead of CLIP
+    # ==========================================
+    vertex_ai_project: Optional[str] = None
+    vertex_ai_location: str = "us-central1"
+    use_vertex_ai_embeddings: bool = False  # Toggle for production
+    vertex_ai_embedding_dimension: int = 512  # Match CLIP/Pinecone index
+    
     def validate_all(self) -> None:
         """Validate critical settings"""
         errors = []
