@@ -1,0 +1,26 @@
+# Render Blueprint - Alternative deployment option
+services:
+  - type: web
+    name: flusso-workflow
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12"
+      - key: FRESHDESK_DOMAIN
+        sync: false
+      - key: FRESHDESK_API_KEY
+        sync: false
+      - key: PINECONE_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_FILE_SEARCH_STORE_ID
+        sync: false
+      - key: PINECONE_IMAGE_INDEX
+        sync: false
+      - key: PINECONE_TICKETS_INDEX
+        sync: false

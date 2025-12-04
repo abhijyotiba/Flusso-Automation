@@ -1,0 +1,22 @@
+# Docker ignore file
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+.env
+.env.local
+.venv/
+venv/
+*.egg-info/
+.git/
+.gitignore
+*.md
+.cache/
+workflow_logs/
+*.log
+flusso tickets data folder/
+reference code for retrivals agents/
+.pytest_cache/
+.mypy_cache/
+*.ipynb

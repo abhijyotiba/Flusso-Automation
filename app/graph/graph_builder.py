@@ -53,11 +53,11 @@ def skip_ticket_handler(state: TicketState) -> dict:
     logger.info(f"[SKIP_HANDLER] Processing skip for category: {category}")
     logger.info(f"[SKIP_HANDLER] Reason: {skip_reason}")
     
-    # Determine tags based on category
+    # Determine tags based on category - SINGLE TAG only for skip categories
     tag_map = {
-        "purchase_order": ["purchase_order", "po_received", "no_action_needed"],
-        "auto_reply": ["auto_reply", "no_action_needed"],
-        "spam": ["spam", "no_action_needed"]
+        "purchase_order": ["purchase_order"],
+        "auto_reply": ["auto_reply"],
+        "spam": ["spam"]
     }
     
     tags = tag_map.get(category, ["skipped"])

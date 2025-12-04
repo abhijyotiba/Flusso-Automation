@@ -24,19 +24,29 @@ def convert_to_html(text: str) -> str:
     """
     Convert markdown-style text to HTML for Freshdesk notes.
     Handles: bold, lists, paragraphs, headers, [VERIFY] tags
-    """
-    # Escape HTML entities first
-    text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     
-    # Convert [VERIFY: ...] tags to highlighted spans
+    Order of operations:
+    1. Convert markdown to HTML tags FIRST
+    2. Then escape remaining plain text content
+    """
+    # 1. Convert [VERIFY: ...] tags to highlighted spans FIRST (before escaping)
     text = re.sub(
         r'\[VERIFY:\s*([^\]]+)\]',
-        r'<span style="background: #fef3c7; color: #92400e; padding: 2px 6px; border-radius: 4px; font-size: 12px;">⚠️ VERIFY: \1</span>',
+        r'|||VERIFY_START|||\1|||VERIFY_END|||',  # Temporary placeholder
         text
     )
     
-    # Convert **bold** to <strong>
-    text = re.sub(r'\*\*([^*]+)\*\*', r'<strong>\1</strong>', text)
+    # 2. Convert **bold** to placeholder (before escaping)
+    text = re.sub(r'\*\*([^*]+)\*\*', r'|||BOLD_START|||\1|||BOLD_END|||', text)
+    
+    # 3. Now escape HTML entities in plain text
+    text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    
+    # 4. Replace placeholders with actual HTML tags
+    text = text.replace('|||VERIFY_START|||', '<span style="background: #fef3c7; color: #92400e; padding: 2px 6px; border-radius: 4px; font-size: 12px;">⚠️ VERIFY: ')
+    text = text.replace('|||VERIFY_END|||', '</span>')
+    text = text.replace('|||BOLD_START|||', '<strong>')
+    text = text.replace('|||BOLD_END|||', '</strong>')
     
     # Convert numbered lists (1. 2. 3.) and bullet lists
     lines = text.split('\n')

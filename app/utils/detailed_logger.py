@@ -10,22 +10,24 @@ This logger captures:
 - Error details
 
 Logs are stored in: workflow_logs/ticket_{id}_{timestamp}.json
+
+Thread-safe implementation using thread-local storage for concurrent webhooks.
 """
 
 import logging
 import json
 import time
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass, field, asdict
-from threading import Lock
 
 logger = logging.getLogger(__name__)
 
-# Global log storage for current workflow
-_current_log: Optional["WorkflowLog"] = None
-_log_lock = Lock()
+# Thread-safe storage for concurrent workflow logs
+_workflow_logs: Dict[int, "WorkflowLog"] = {}
+_logs_lock = threading.Lock()
 
 LOG_DIR = Path("workflow_logs")
 
@@ -87,26 +89,29 @@ class WorkflowLog:
 
 
 def start_workflow_log(ticket_id: str) -> WorkflowLog:
-    """Initialize a new workflow log for a ticket"""
-    global _current_log
+    """Initialize a new workflow log for a ticket (thread-safe)"""
+    thread_id = threading.get_ident()
     
-    with _log_lock:
-        _current_log = WorkflowLog(
+    with _logs_lock:
+        log = WorkflowLog(
             ticket_id=ticket_id,
             started_at=datetime.now().isoformat()
         )
-        logger.info(f"📝 Started detailed logging for ticket #{ticket_id}")
-        return _current_log
+        _workflow_logs[thread_id] = log
+        logger.info(f"📝 Started detailed logging for ticket #{ticket_id} (thread: {thread_id})")
+        return log
 
 
 def get_current_log() -> Optional[WorkflowLog]:
-    """Get the current workflow log"""
-    return _current_log
+    """Get the current workflow log for this thread"""
+    thread_id = threading.get_ident()
+    with _logs_lock:
+        return _workflow_logs.get(thread_id)
 
 
 def log_node_start(node_name: str, input_summary: Dict[str, Any] = None) -> NodeExecution:
-    """Log the start of a node execution"""
-    global _current_log
+    """Log the start of a node execution (thread-safe)"""
+    thread_id = threading.get_ident()
     
     node = NodeExecution(
         node_name=node_name,
@@ -114,9 +119,10 @@ def log_node_start(node_name: str, input_summary: Dict[str, Any] = None) -> Node
         input_summary=input_summary or {}
     )
     
-    with _log_lock:
-        if _current_log:
-            _current_log.nodes.append(node)
+    with _logs_lock:
+        current_log = _workflow_logs.get(thread_id)
+        if current_log:
+            current_log.nodes.append(node)
     
     return node
 
@@ -233,36 +239,61 @@ def complete_workflow_log(
     overall_confidence: float = 0.0,
     metrics: Dict[str, Any] = None
 ):
-    """Complete the workflow log and save to file"""
-    global _current_log
+    """Complete the workflow log and save to file (thread-safe)"""
+    thread_id = threading.get_ident()
     
-    with _log_lock:
-        if not _current_log:
-            logger.warning("No active workflow log to complete")
+    with _logs_lock:
+        if thread_id not in _workflow_logs:
+            logger.warning("No active workflow log to complete for this thread")
             return None
         
-        _current_log.ended_at = datetime.now().isoformat()
-        _current_log.resolution_status = resolution_status
-        _current_log.final_response = final_response
-        _current_log.overall_confidence = overall_confidence
-        _current_log.metrics = metrics or {}
+        current_log = _workflow_logs[thread_id]
+        current_log.ended_at = datetime.now().isoformat()
+        current_log.resolution_status = resolution_status
+        current_log.final_response = final_response
+        current_log.overall_confidence = overall_confidence
+        current_log.metrics = metrics or {}
         
         # Calculate total duration
-        start = datetime.fromisoformat(_current_log.started_at)
-        end = datetime.fromisoformat(_current_log.ended_at)
-        _current_log.total_duration_seconds = (end - start).total_seconds()
+        start = datetime.fromisoformat(current_log.started_at)
+        end = datetime.fromisoformat(current_log.ended_at)
+        current_log.total_duration_seconds = (end - start).total_seconds()
         
-        # Save to file
-        log_path = save_workflow_log(_current_log)
+        # Log summary to console instead of saving to file
+        logger.info(f"📊 Workflow completed for ticket #{current_log.ticket_id}")
+        logger.info(f"   Duration: {current_log.total_duration_seconds:.2f}s")
+        logger.info(f"   Resolution: {resolution_status}")
+        logger.info(f"   Nodes executed: {len(current_log.nodes)}")
         
-        current = _current_log
-        _current_log = None
+        # Remove from thread-local storage
+        del _workflow_logs[thread_id]
         
-        return log_path
+        return None  # No file path returned
 
 
-def save_workflow_log(log: WorkflowLog) -> Path:
-    """Save workflow log to JSON file"""
+def save_workflow_log(log: WorkflowLog) -> Optional[Path]:
+    """
+    Save workflow log to JSON file.
+    Currently disabled for cloud deployment - logs go to console only.
+    """
+    # FILE LOGGING DISABLED - using console logging for cloud deployment
+    # To re-enable, uncomment the code below:
+    
+    # LOG_DIR.mkdir(exist_ok=True)
+    # timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    # filename = f"ticket_{log.ticket_id}_{timestamp}.json"
+    # filepath = LOG_DIR / filename
+    # ... (write to file)
+    
+    logger.debug(f"File logging disabled. Ticket #{log.ticket_id} log available in console.")
+    return None
+
+
+def _save_workflow_log_to_file(log: WorkflowLog) -> Path:
+    """
+    [DISABLED] Save workflow log to JSON file.
+    Keep this for future use when cloud storage is configured.
+    """
     LOG_DIR.mkdir(exist_ok=True)
     
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -329,12 +360,15 @@ def save_workflow_log(log: WorkflowLog) -> Path:
 
 
 def get_node_summary() -> str:
-    """Get a summary of all nodes executed in current workflow"""
-    if not _current_log:
+    """Get a summary of all nodes executed in current workflow (thread-safe)"""
+    thread_id = threading.get_ident()
+    current_log = _workflow_logs.get(thread_id)
+    
+    if not current_log:
         return "No active workflow"
     
-    lines = [f"Workflow for Ticket #{_current_log.ticket_id}:"]
-    for node in _current_log.nodes:
+    lines = [f"Workflow for Ticket #{current_log.ticket_id}:"]
+    for node in current_log.nodes:
         status_icon = "✅" if node.status == "completed" else "❌" if node.status == "error" else "🔄"
         lines.append(f"  {status_icon} {node.node_name}: {node.duration_seconds:.2f}s")
     

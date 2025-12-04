@@ -339,41 +339,48 @@ def classify_ticket_category(state: TicketState) -> Dict[str, Any]:
 
 
 # -------------------------------------------------------------
-# FALLBACK CLASSIFIER (rule-based)
+# FALLBACK CLASSIFIER (rule-based with scoring)
 # -------------------------------------------------------------
 def fallback_classification(subject: str, text: str, tags: list) -> str:
-    """Rule-based fallback when LLM fails. Uses our 14-category system."""
+    """
+    Rule-based fallback when LLM fails. Uses our 14-category system.
+    Uses scoring to handle keyword overlap - best match wins.
+    """
     content = (subject + " " + text).lower()
     tags_lower = [t.lower() for t in tags]
     
+    # Category scores - higher score = better match
+    category_scores: Dict[str, float] = {}
+    
     # -------------------------------------------
-    # SKIP categories (high priority)
+    # SKIP categories (high priority - checked first)
     # -------------------------------------------
     
-    # Purchase Order detection
+    # Purchase Order detection (very high weight)
     po_keywords = ["purchase order", "po #", "po#", "p.o.", "invoice", "order confirmation", 
                    "order #", "order number", "payment received", "payment confirmation"]
-    if any(kw in content for kw in po_keywords):
-        return "purchase_order"
+    po_score = sum(2.0 for kw in po_keywords if kw in content)
+    if po_score > 0:
+        category_scores["purchase_order"] = po_score + 5  # Boost skip categories
     
-    # Auto-reply detection
+    # Auto-reply detection (high priority)
     auto_reply_keywords = ["auto-reply", "auto reply", "automatic reply", "out of office", 
                           "out-of-office", "ooo", "away from office", "on vacation", 
                           "be back", "i am currently out"]
-    if any(kw in content for kw in auto_reply_keywords):
-        return "auto_reply"
+    auto_score = sum(2.0 for kw in auto_reply_keywords if kw in content)
+    if auto_score > 0:
+        category_scores["auto_reply"] = auto_score + 5  # Boost skip categories
     
     # Spam detection
     spam_keywords = ["unsubscribe", "click here to win", "lottery", "congratulations you won",
                     "act now", "limited time offer", "free money"]
-    if any(kw in content for kw in spam_keywords):
-        return "spam"
+    spam_score = sum(2.0 for kw in spam_keywords if kw in content)
+    if spam_score > 0:
+        category_scores["spam"] = spam_score + 5  # Boost skip categories
     
     # -------------------------------------------
-    # FULL WORKFLOW categories
+    # FULL WORKFLOW categories - tag-based matching
     # -------------------------------------------
-    
-    # Tag-based matching
     tag_map = {
         "warranty": "warranty_claim",
         "defect": "product_issue",
@@ -391,16 +398,17 @@ def fallback_classification(subject: str, text: str, tags: list) -> str:
         "suggestion": "feedback_suggestion"
     }
 
+    # Tags get high weight (they're usually accurate)
     for t in tags_lower:
         for key, cat in tag_map.items():
             if key in t:
-                return cat
+                category_scores[cat] = category_scores.get(cat, 0) + 3.0
 
     # -------------------------------------------
-    # Keyword-based matching
+    # Keyword-based matching with weights
     # -------------------------------------------
     keyword_map = {
-        # Full workflow
+        # Full workflow (weight 1.0 per match)
         "product_issue": ["broken", "defective", "faulty", "damaged", "not working", 
                          "cracked", "leaking", "leak", "dripping"],
         "replacement_parts": ["replacement part", "spare part", "need part", "order part",
@@ -425,12 +433,19 @@ def fallback_classification(subject: str, text: str, tags: list) -> str:
                                "great product", "love it", "disappointed"]
     }
 
+    # Score based on keyword matches
     for category, keywords in keyword_map.items():
-        for word in keywords:
-            if word in content:
-                return category
-
-    return "general"
+        match_count = sum(1.0 for word in keywords if word in content)
+        if match_count > 0:
+            category_scores[category] = category_scores.get(category, 0) + match_count
+    
+    # Return the category with highest score, or "general" if no matches
+    if not category_scores:
+        return "general"
+    
+    best_category = max(category_scores.items(), key=lambda x: x[1])
+    logger.debug(f"Fallback classification scores: {category_scores}, selected: {best_category[0]}")
+    return best_category[0]
 
 
 # -------------------------------------------------------------

@@ -100,7 +100,31 @@ async def detailed_health_check():
     """
     Detailed health check that verifies all external dependencies.
     Use for monitoring/alerting systems.
+    Has a 15-second timeout to prevent hanging.
     """
+    import asyncio
+    from datetime import datetime
+    
+    try:
+        # Wrap entire check in timeout
+        return await asyncio.wait_for(
+            _perform_health_checks(),
+            timeout=15.0  # 15 seconds max for all checks
+        )
+    except asyncio.TimeoutError:
+        logger.error("Health check timed out after 15s")
+        return JSONResponse(
+            content={
+                "status": "unhealthy",
+                "error": "Health check timeout - one or more dependencies not responding",
+                "timestamp": datetime.now().isoformat()
+            },
+            status_code=503
+        )
+
+
+async def _perform_health_checks() -> dict:
+    """Actual health check logic with individual dependency checks"""
     from app.config.settings import settings
     import httpx
     
@@ -177,12 +201,8 @@ async def freshdesk_webhook(request: Request):
     """
     Freshdesk webhook endpoint
     Receives ticket creation/update events.
-
-    Expected payload:
-    {
-        "ticket_id": 12345,
-        "freshdesk_webhook": {...}
-    }
+    
+    Handles multiple payload formats from Freshdesk.
     """
 
     global graph, webhook_cache
@@ -194,29 +214,89 @@ async def freshdesk_webhook(request: Request):
     dedup_key = None
     
     try:
-        payload = await request.json()
-        ticket_id = payload.get("ticket_id")
+        # ---------------------------------------------------
+        # PARSE PAYLOAD - Handle various Freshdesk formats
+        # ---------------------------------------------------
+        body = await request.body()
+        body_str = body.decode('utf-8').strip()
+        
+        logger.info(f"📥 Raw webhook body: {body_str[:500]}...")  # Log first 500 chars for debugging
+        
+        # Try to parse JSON
+        try:
+            payload = await request.json()
+        except Exception as json_err:
+            logger.warning(f"⚠️ JSON parse failed, trying to extract ticket_id from body: {json_err}")
+            # Try to extract ticket_id from malformed JSON or form data
+            import re
+            match = re.search(r'ticket_id["\s:]+(\d+)', body_str)
+            if match:
+                payload = {"ticket_id": int(match.group(1))}
+                logger.info(f"✅ Extracted ticket_id from body: {payload['ticket_id']}")
+            else:
+                # Check if it's form-urlencoded
+                if b'ticket_id=' in body:
+                    from urllib.parse import parse_qs
+                    parsed = parse_qs(body_str)
+                    if 'ticket_id' in parsed:
+                        payload = {"ticket_id": int(parsed['ticket_id'][0])}
+                    else:
+                        raise HTTPException(status_code=400, detail=f"Could not parse payload: {body_str[:200]}")
+                else:
+                    raise HTTPException(status_code=400, detail=f"Invalid JSON and no ticket_id found: {body_str[:200]}")
+        
+        # Extract ticket_id from various possible locations
+        ticket_id = (
+            payload.get("ticket_id") or 
+            payload.get("id") or 
+            payload.get("freshdesk_webhook", {}).get("ticket_id") or
+            payload.get("ticket", {}).get("id")
+        )
         
         if not ticket_id:
+            logger.error(f"❌ No ticket_id in payload: {payload}")
             raise HTTPException(status_code=400, detail="Missing ticket_id in payload")
+
+        # Normalize ticket_id to string for consistent hashing
+        ticket_id = str(ticket_id)
 
         # ---------------------------------------------------
         # DEDUPLICATION CHECK
         # Prevent processing same ticket update multiple times
+        # Uses ticket_id + updated_at as unique key
+        # If no updated_at, uses ticket_id + current timestamp (allows reprocessing after 1 hour)
         # ---------------------------------------------------
-        updated_at = payload.get("updated_at") or payload.get("freshdesk_webhook", {}).get("ticket_updated_at", "")
-        dedup_key = hashlib.sha256(f"{ticket_id}:{updated_at}".encode()).hexdigest()
+        updated_at = (
+            payload.get("updated_at") or 
+            payload.get("freshdesk_webhook", {}).get("ticket_updated_at") or
+            payload.get("ticket", {}).get("updated_at") or
+            ""
+        )
         
-        if webhook_cache and webhook_cache.get(dedup_key):
-            logger.warning(f"⚠️ Duplicate webhook detected for ticket #{ticket_id}, skipping")
-            return JSONResponse(
-                content={"status": "duplicate", "ticket_id": ticket_id, "message": "Already processed"},
-                status_code=200
-            )
+        # If no updated_at from Freshdesk, create a time-bucketed key
+        # This allows the same ticket to be reprocessed after the cache expires (1 hour)
+        # but prevents rapid duplicate webhooks
+        if not updated_at:
+            from datetime import datetime
+            # Use hour-bucketed timestamp so same ticket can be reprocessed after cache expires
+            updated_at = datetime.utcnow().strftime("%Y-%m-%d-%H")
+            logger.debug(f"No updated_at in payload, using time bucket: {updated_at}")
         
-        # Mark as processing (expires in 1 hour)
+        dedup_key = hashlib.sha256(f"ticket:{ticket_id}:updated:{updated_at}".encode()).hexdigest()
+        
+        # Check if already processing or processed
         if webhook_cache:
-            webhook_cache.set(dedup_key, True, expire=3600)
+            existing = webhook_cache.get(dedup_key)
+            if existing:
+                logger.warning(f"⚠️ Duplicate webhook detected for ticket #{ticket_id}, skipping")
+                return JSONResponse(
+                    content={"status": "duplicate", "ticket_id": ticket_id, "message": "Already processed"},
+                    status_code=200
+                )
+            
+            # Mark as processing IMMEDIATELY to prevent race conditions
+            # Use 'processing' status first, then update to 'completed' after success
+            webhook_cache.set(dedup_key, "processing", expire=3600)
         
         logger.info(f"📨 Received webhook for ticket #{ticket_id}")
 
@@ -280,7 +360,35 @@ async def freshdesk_webhook(request: Request):
 
         logger.info(f"🔄 Starting workflow for ticket #{ticket_id}")
 
-        final_state = graph.invoke(initial_state)
+        # ---------------------------------------------------
+        # RUN WORKFLOW WITH TIMEOUT
+        # Maximum 5 minutes per ticket to prevent stuck workflows
+        # ---------------------------------------------------
+        import asyncio
+        import concurrent.futures
+        
+        WORKFLOW_TIMEOUT = 300  # 5 minutes max per ticket
+        
+        loop = asyncio.get_event_loop()
+        try:
+            # Run sync graph.invoke in thread pool with timeout
+            final_state = await asyncio.wait_for(
+                loop.run_in_executor(None, graph.invoke, initial_state),
+                timeout=WORKFLOW_TIMEOUT
+            )
+        except asyncio.TimeoutError:
+            logger.error(f"⏰ Workflow TIMEOUT for ticket #{ticket_id} after {WORKFLOW_TIMEOUT}s")
+            # Remove from dedup cache so it can be retried
+            if webhook_cache and dedup_key:
+                webhook_cache.delete(dedup_key)
+            return JSONResponse(
+                content={
+                    "error": f"Workflow timeout after {WORKFLOW_TIMEOUT}s",
+                    "ticket_id": ticket_id,
+                    "workflow_completed": False
+                },
+                status_code=504  # Gateway Timeout
+            )
 
         result = {
             "ticket_id": ticket_id,
@@ -291,6 +399,10 @@ async def freshdesk_webhook(request: Request):
             "workflow_completed": True,
         }
 
+        # Mark as completed in cache (update status from "processing" to "completed")
+        if webhook_cache and dedup_key:
+            webhook_cache.set(dedup_key, "completed", expire=3600)
+
         logger.info(
             f"✅ Workflow completed for ticket #{ticket_id}: {result['resolution_status']}"
         )
@@ -298,6 +410,7 @@ async def freshdesk_webhook(request: Request):
         return JSONResponse(content=result, status_code=200)
 
     except HTTPException:
+        # Don't clear cache for HTTP exceptions (bad requests, etc.)
         raise
 
     except Exception as e:
@@ -306,7 +419,7 @@ async def freshdesk_webhook(request: Request):
         if webhook_cache and dedup_key:
             webhook_cache.delete(dedup_key)
         return JSONResponse(
-            content={"error": str(e), "workflow_completed": False},
+            content={"error": str(e), "ticket_id": str(ticket_id) if ticket_id else None, "workflow_completed": False},
             status_code=500,
         )
 

@@ -42,6 +42,8 @@ logger = logging.getLogger(__name__)
 POLL_INTERVAL = 30  # seconds
 LOOKBACK_MINUTES = 60  # Check tickets from last hour
 PROCESSED_FILE = ".cache/processed_tickets.json"
+MAX_CONSECUTIVE_ERRORS = 10  # Stop after this many consecutive failures
+MAX_BACKOFF_SECONDS = 300  # Maximum wait time (5 minutes) during backoff
 
 
 class FreshdeskPoller:
@@ -52,6 +54,7 @@ class FreshdeskPoller:
         self.processed_tickets = self._load_processed()
         self.freshdesk_url = f"https://{settings.freshdesk_domain}/api/v2"
         self.auth = (settings.freshdesk_api_key, "X")
+        self.consecutive_errors = 0  # Track consecutive failures
         
     def _load_processed(self) -> dict:
         """Load previously processed ticket IDs"""
@@ -119,7 +122,7 @@ class FreshdeskPoller:
             
         except Exception as e:
             logger.error(f"❌ Failed to fetch tickets: {e}")
-            return []
+            return None  # Return None to signal error (vs empty list for no tickets)
     
     def process_ticket(self, ticket: dict) -> dict:
         """Process a single ticket through the workflow"""
@@ -207,8 +210,18 @@ class FreshdeskPoller:
             }
     
     def poll_once(self) -> int:
-        """Single poll iteration - returns count of new tickets processed"""
-        tickets = self.fetch_recent_tickets()
+        """
+        Single poll iteration.
+        Returns: count of new tickets processed, or -1 on fetch error
+        """
+        try:
+            tickets = self.fetch_recent_tickets()
+        except Exception as e:
+            logger.error(f"❌ Failed to fetch tickets: {e}")
+            return -1  # Signal error to caller
+        
+        if tickets is None:
+            return -1  # fetch_recent_tickets returned None on error
         
         if not tickets:
             return 0
@@ -235,13 +248,14 @@ class FreshdeskPoller:
         return new_count
     
     def run_continuous(self):
-        """Run continuous polling loop"""
+        """Run continuous polling loop with error handling and backoff"""
         logger.info("\n" + "="*60)
         logger.info("🔄 FLUSSO FRESHDESK POLLER - CONTINUOUS MODE")
         logger.info("="*60)
         logger.info(f"📋 Polling interval: {POLL_INTERVAL} seconds")
         logger.info(f"📋 Lookback window: {LOOKBACK_MINUTES} minutes")
         logger.info(f"📋 Freshdesk domain: {settings.freshdesk_domain}")
+        logger.info(f"📋 Max consecutive errors: {MAX_CONSECUTIVE_ERRORS}")
         logger.info("="*60)
         logger.info("\n⏳ Waiting for new tickets... (Press Ctrl+C to stop)\n")
         
@@ -249,15 +263,51 @@ class FreshdeskPoller:
         
         try:
             while True:
-                new_tickets = self.poll_once()
-                
-                if new_tickets > 0:
-                    logger.info(f"\n✨ Processed {new_tickets} new ticket(s)")
-                else:
-                    # Show a subtle heartbeat
-                    print(".", end="", flush=True)
-                
-                time.sleep(POLL_INTERVAL)
+                try:
+                    new_tickets = self.poll_once()
+                    
+                    if new_tickets > 0:
+                        logger.info(f"\n✨ Processed {new_tickets} new ticket(s)")
+                        self.consecutive_errors = 0  # Reset on success
+                    elif new_tickets == 0:
+                        # Successful poll but no new tickets
+                        self.consecutive_errors = 0  # Reset on success
+                        print(".", end="", flush=True)
+                    else:
+                        # poll_once returns -1 on error
+                        self.consecutive_errors += 1
+                        
+                        if self.consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+                            logger.critical(
+                                f"🚨 Stopping poller after {MAX_CONSECUTIVE_ERRORS} consecutive errors. "
+                                "Check your API credentials and network connection."
+                            )
+                            break
+                        
+                        # Exponential backoff: 30s, 60s, 120s... up to MAX_BACKOFF_SECONDS
+                        backoff = min(
+                            POLL_INTERVAL * (2 ** (self.consecutive_errors - 1)),
+                            MAX_BACKOFF_SECONDS
+                        )
+                        logger.warning(
+                            f"⚠️ Error #{self.consecutive_errors}/{MAX_CONSECUTIVE_ERRORS}. "
+                            f"Backing off for {backoff}s..."
+                        )
+                        time.sleep(backoff)
+                        continue  # Skip normal sleep
+                    
+                    time.sleep(POLL_INTERVAL)
+                    
+                except Exception as e:
+                    self.consecutive_errors += 1
+                    logger.error(f"❌ Poll loop error: {e}")
+                    
+                    if self.consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+                        logger.critical(f"🚨 Stopping after {MAX_CONSECUTIVE_ERRORS} errors")
+                        break
+                    
+                    backoff = min(POLL_INTERVAL * (2 ** self.consecutive_errors), MAX_BACKOFF_SECONDS)
+                    time.sleep(backoff)
                 
         except KeyboardInterrupt:
             logger.info("\n\n🛑 Poller stopped by user")
