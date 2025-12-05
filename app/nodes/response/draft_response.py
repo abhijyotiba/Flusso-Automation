@@ -6,6 +6,7 @@ Generates customer-facing response based on all analysis.
 import logging
 import time
 import re
+from datetime import datetime
 from typing import Dict, Any
 
 from app.graph.state import TicketState
@@ -186,13 +187,13 @@ Visual matches have low confidence. Reason: {vision_reason}
 """
 
     # Get current date for accurate date comparisons
-    from datetime import datetime
-    current_date = datetime.now().strftime("%B %d, %Y")  # e.g., "December 05, 2025"
-    current_date_iso = datetime.now().strftime("%Y-%m-%d")  # e.g., "2025-12-05"
+    current_date = datetime.now().strftime("%m-%d-%Y")  # e.g., "12-05-2025" (MM-DD-YYYY)
+    current_date_readable = datetime.now().strftime("%B %d, %Y")  # e.g., "December 05, 2025"
 
     meta = f"""
-TODAY'S DATE: {current_date} ({current_date_iso})
-Use this date for ALL date comparisons. Any date before {current_date_iso} is in the PAST.
+TODAY'S DATE: {current_date} ({current_date_readable})
+Use this date for ALL date comparisons. Any date before {current_date} is in the PAST.
+Date format is MM-DD-YYYY.
 
 DECISION METRICS:
 - Enough Information: {enough_info}

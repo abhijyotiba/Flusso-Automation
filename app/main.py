@@ -270,41 +270,26 @@ async def freshdesk_webhook(request: Request):
 
         # ---------------------------------------------------
         # DEDUPLICATION CHECK
-        # Prevent processing same ticket update multiple times
-        # Uses ticket_id + updated_at as unique key
-        # If no updated_at, uses ticket_id + current timestamp (allows reprocessing after 1 hour)
+        # Prevent processing same ticket multiple times
+        # Uses ticket_id as primary key with 1-hour cooldown
+        # This prevents reprocessing when our own updates trigger new webhooks
         # ---------------------------------------------------
-        updated_at = (
-            payload.get("updated_at") or 
-            payload.get("freshdesk_webhook", {}).get("ticket_updated_at") or
-            payload.get("ticket", {}).get("updated_at") or
-            ""
-        )
         
-        # If no updated_at from Freshdesk, create a time-bucketed key
-        # This allows the same ticket to be reprocessed after the cache expires (1 hour)
-        # but prevents rapid duplicate webhooks
-        if not updated_at:
-            from datetime import datetime
-            # Use hour-bucketed timestamp so same ticket can be reprocessed after cache expires
-            updated_at = datetime.utcnow().strftime("%Y-%m-%d-%H")
-            logger.debug(f"No updated_at in payload, using time bucket: {updated_at}")
+        # Check if ticket was recently processed (within last hour)
+        # Using just ticket_id ensures we don't reprocess even if updated_at changes
+        dedup_key = hashlib.sha256(f"ticket:{ticket_id}".encode()).hexdigest()
         
-        dedup_key = hashlib.sha256(f"ticket:{ticket_id}:updated:{updated_at}".encode()).hexdigest()
-        
-        # Check if already processing or processed
         if webhook_cache:
             existing = webhook_cache.get(dedup_key)
             if existing:
-                logger.warning(f"⚠️ Duplicate webhook detected for ticket #{ticket_id}, skipping")
+                logger.warning(f"⚠️ Ticket #{ticket_id} was recently processed (status: {existing}), skipping")
                 return JSONResponse(
-                    content={"status": "duplicate", "ticket_id": ticket_id, "message": "Already processed"},
+                    content={"status": "duplicate", "ticket_id": ticket_id, "message": f"Recently processed ({existing})"},
                     status_code=200
                 )
             
             # Mark as processing IMMEDIATELY to prevent race conditions
-            # Use 'processing' status first, then update to 'completed' after success
-            webhook_cache.set(dedup_key, "processing", expire=3600)
+            webhook_cache.set(dedup_key, "processing", expire=3600)  # 1 hour cooldown
         
         logger.info(f"📨 Received webhook for ticket #{ticket_id}")
 

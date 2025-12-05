@@ -58,6 +58,46 @@ def fetch_ticket_from_freshdesk(state: TicketState) -> Dict[str, Any]:
         data = client.extract_ticket_data(ticket)
 
         # -------------------------------------------------
+        # CHECK IF ALREADY PROCESSED BY AI
+        # Skip tickets that already have AI processing tags
+        # -------------------------------------------------
+        existing_tags = data.get("tags", [])
+        ai_processed_tags = ["AI_PROCESSED", "AI_UNRESOLVED", "LOW_CONFIDENCE_MATCH", "VIP_RULE_FAILURE"]
+        
+        already_processed = any(tag in existing_tags for tag in ai_processed_tags)
+        if already_processed:
+            logger.warning(f"{STEP_NAME} | ⚠️ Ticket #{ticket_id} already has AI tags: {existing_tags}")
+            logger.warning(f"{STEP_NAME} | Marking for skip to prevent duplicate processing")
+            # Return minimal state with skip flag
+            return {
+                "ticket_subject": data.get("subject", ""),
+                "ticket_text": data.get("description", ""),
+                "ticket_images": [],
+                "requester_email": data.get("requester_email", ""),
+                "requester_name": data.get("requester_name", "Unknown"),
+                "tags": existing_tags,
+                "has_text": False,
+                "has_image": False,
+                "ran_vision": True,  # Mark as done to skip RAG
+                "ran_text_rag": True,
+                "ran_past_tickets": True,
+                "should_skip": True,
+                "skip_reason": f"Already processed (has tag: {[t for t in existing_tags if t in ai_processed_tags]})",
+                "skip_private_note": "",  # No note needed, already processed
+                "ticket_category": "already_processed",
+                "audit_events": add_audit_event(
+                    state,
+                    event="fetch_ticket",
+                    event_type="SKIP",
+                    details={
+                        "ticket_id": ticket_id,
+                        "reason": "Already has AI processing tags",
+                        "existing_tags": existing_tags
+                    }
+                )["audit_events"],
+            }
+
+        # -------------------------------------------------
         # Extract text description
         # -------------------------------------------------
         description = data.get("description", "")

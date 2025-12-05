@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 def skip_ticket_handler(state: TicketState) -> dict:
     """
     Handle tickets that should skip the full workflow.
-    Categories: purchase_order, auto_reply, spam
+    Categories: purchase_order, auto_reply, spam, already_processed
     
     Actions:
     - Set appropriate tags
@@ -52,6 +52,27 @@ def skip_ticket_handler(state: TicketState) -> dict:
     
     logger.info(f"[SKIP_HANDLER] Processing skip for category: {category}")
     logger.info(f"[SKIP_HANDLER] Reason: {skip_reason}")
+    
+    # If already processed, don't add any tags or notes
+    if category == "already_processed":
+        logger.info(f"[SKIP_HANDLER] Ticket already processed by AI, no action needed")
+        return {
+            "suggested_tags": [],  # Don't modify tags
+            "private_note": "",    # Don't add note
+            "generated_reply": None,
+            "resolution_decision": "already_processed",
+            "resolution_reason": skip_reason,
+            "skip_workflow_applied": True,
+            "audit_events": add_audit_event(
+                state,
+                event="skip_ticket_handler",
+                event_type="SKIP",
+                details={
+                    "category": category,
+                    "reason": "Already processed by AI - no action taken"
+                }
+            )["audit_events"]
+        }
     
     # Determine tags based on category - SINGLE TAG only for skip categories
     tag_map = {

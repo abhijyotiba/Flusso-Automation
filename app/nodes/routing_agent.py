@@ -137,6 +137,31 @@ def classify_ticket_category(state: TicketState) -> Dict[str, Any]:
     logger.info(f"{STEP_NAME} | Starting ticket classification")
     logger.info(f"{'='*60}")
 
+    # -------------------------------------------
+    # CHECK IF ALREADY MARKED FOR SKIP (by fetch_ticket)
+    # This handles tickets with existing AI tags
+    # -------------------------------------------
+    if state.get("should_skip") and state.get("ticket_category") == "already_processed":
+        logger.info(f"{STEP_NAME} | ⏭️ Ticket already marked for skip (has AI tags)")
+        # Return existing state without modification
+        return {
+            "ticket_category": "already_processed",
+            "should_skip": True,
+            "skip_reason": state.get("skip_reason", "Already processed by AI"),
+            "skip_private_note": "",
+            "category_requires_vision": False,
+            "category_requires_text_rag": False,
+            "audit_events": add_audit_event(
+                state,
+                event="classify_ticket_category",
+                event_type="SKIP",
+                details={
+                    "category": "already_processed",
+                    "reason": "Ticket has existing AI processing tags"
+                }
+            )["audit_events"]
+        }
+
     subject = state.get("ticket_subject", "") or ""
     text = state.get("ticket_text", "") or ""
     tags = state.get("tags", [])

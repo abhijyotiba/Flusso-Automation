@@ -18,7 +18,7 @@ STEP_NAME = "1️⃣6️⃣ FRESHDESK_UPDATE"
 
 def _handle_skipped_ticket(state: TicketState, ticket_id: int, start_time: float) -> Dict[str, Any]:
     """
-    Handle tickets that skipped the full workflow (PO, auto-reply, spam).
+    Handle tickets that skipped the full workflow (PO, auto-reply, spam, already_processed).
     Only adds private note + tags, no public response.
     """
     category = state.get("ticket_category", "unknown")
@@ -28,6 +28,26 @@ def _handle_skipped_ticket(state: TicketState, ticket_id: int, start_time: float
     
     logger.info(f"{STEP_NAME} | 🚀 SKIP MODE: category={category}")
     logger.info(f"{STEP_NAME} | Skip reason: {skip_reason}")
+    
+    # If already processed by AI, do nothing (don't add notes or update tags)
+    if category == "already_processed":
+        duration = time.time() - start_time
+        logger.info(f"{STEP_NAME} | ⏭️ Already processed - no Freshdesk update needed")
+        return {
+            "tags": state.get("tags", []),
+            "resolution_status": "already_processed",
+            "audit_events": add_audit_event(
+                state,
+                "update_freshdesk_ticket",
+                "SKIP",
+                {
+                    "ticket_id": ticket_id,
+                    "category": category,
+                    "reason": "Already processed by AI - no update performed",
+                    "duration_seconds": duration,
+                },
+            )["audit_events"],
+        }
     
     client = get_freshdesk_client()
     
@@ -43,10 +63,14 @@ def _handle_skipped_ticket(state: TicketState, ticket_id: int, start_time: float
         old_tags = state.get("tags") or []
         merged_tags = sorted(list(set(old_tags + suggested_tags)))
         
-        logger.info(f"{STEP_NAME} | 🏷 Updating tags: {old_tags} + {suggested_tags} → {merged_tags}")
-        tags_start = time.time()
-        client.update_ticket(ticket_id, tags=merged_tags)
-        logger.info(f"{STEP_NAME} | ✓ Tags updated in {time.time() - tags_start:.2f}s")
+        # Only update if there are new tags to add
+        if suggested_tags:
+            logger.info(f"{STEP_NAME} | 🏷 Updating tags: {old_tags} + {suggested_tags} → {merged_tags}")
+            tags_start = time.time()
+            client.update_ticket(ticket_id, tags=merged_tags)
+            logger.info(f"{STEP_NAME} | ✓ Tags updated in {time.time() - tags_start:.2f}s")
+        else:
+            logger.info(f"{STEP_NAME} | 🏷 No new tags to add, skipping tag update")
         
         duration = time.time() - start_time
         logger.info(f"{STEP_NAME} | ✅ SKIPPED: ticket #{ticket_id} updated (no public response) in {duration:.2f}s")
