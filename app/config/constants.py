@@ -111,7 +111,7 @@ DEFAULT_PAST_TICKET_TOP_K = 5
 # LLM CONFIGURATION
 # ==========================================
 
-DEFAULT_LLM_MODEL = "gemini-2.0-flash-exp"
+DEFAULT_LLM_MODEL = "gemini-2.5-flash"
 DEFAULT_LLM_TEMPERATURE = 0.2
 DEFAULT_LLM_MAX_TOKENS = 2048
 

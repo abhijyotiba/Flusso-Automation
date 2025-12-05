@@ -39,9 +39,8 @@ pinecone>=5.0.0
 
 ##############################
 # CLIP + Vision Embeddings (CPU-only)
-# Using CPU-only PyTorch to avoid large CUDA installation
+# CPU-only PyTorch index is declared at top of file
 ##############################
---extra-index-url https://download.pytorch.org/whl/cpu
 torch>=2.3.0,<3.0.0
 torchvision>=0.18.0,<1.0.0
 open-clip-torch>=3.2.0

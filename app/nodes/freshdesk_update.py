@@ -107,7 +107,8 @@ def update_freshdesk_ticket(state: TicketState) -> Dict[str, Any]:
     client = get_freshdesk_client()
 
     try:
-        # ---------------- DO WE REPLY PUBLIC OR PRIVATE? ----------------
+        # ---------------- ALL AI RESPONSES ARE PRIVATE NOTES ----------------
+        # Human agents review and send public responses manually
         unresolved = status in [
             ResolutionStatus.AI_UNRESOLVED.value,
             ResolutionStatus.LOW_CONFIDENCE_MATCH.value,
@@ -115,33 +116,31 @@ def update_freshdesk_ticket(state: TicketState) -> Dict[str, Any]:
         ]
 
         if unresolved:
-            # private note
+            # Private note with review needed flag
             note_text = f"""
-🤖 *AI Review Needed*
+🤖 <b>AI Review Needed</b>
 
-**Status:** {status}
+<b>Status:</b> {status}
 
-**Suggested Reply:**  
+<b>Suggested Reply:</b>
 {reply_text}
 
-**Decision Metrics**
-- Product Confidence: {state.get('product_match_confidence', 0):.2f}
-- Hallucination Risk: {state.get('hallucination_risk', 0):.2f}
-- Enough Info: {state.get('enough_information', False)}
-- VIP Compliant: {state.get('vip_compliant', True)}
+<b>Decision Metrics:</b>
+• Product Confidence: {state.get('product_match_confidence', 0):.2f}
+• Hallucination Risk: {state.get('hallucination_risk', 0):.2f}
+• Enough Info: {state.get('enough_information', False)}
+• VIP Compliant: {state.get('vip_compliant', True)}
 """
             logger.info(f"{STEP_NAME} | 📝 Adding PRIVATE note (needs human review)")
-            note_start = time.time()
-            client.add_note(ticket_id, note_text, private=True)
-            logger.info(f"{STEP_NAME} | ✓ Private note added in {time.time() - note_start:.2f}s")
-            note_type = "private"
         else:
-            # public reply
-            logger.info(f"{STEP_NAME} | 📨 Adding PUBLIC reply")
-            note_start = time.time()
-            client.add_note(ticket_id, reply_text, private=False)
-            logger.info(f"{STEP_NAME} | ✓ Public reply added in {time.time() - note_start:.2f}s")
-            note_type = "public"
+            # Private note with draft response for agent to review and send
+            note_text = reply_text
+            logger.info(f"{STEP_NAME} | 📝 Adding PRIVATE note (AI draft for agent review)")
+
+        note_start = time.time()
+        client.add_note(ticket_id, note_text, private=True)
+        logger.info(f"{STEP_NAME} | ✓ Private note added in {time.time() - note_start:.2f}s")
+        note_type = "private"
 
         # ---------------------- UPDATE TAGS ----------------------
         old_tags = state.get("tags") or []
