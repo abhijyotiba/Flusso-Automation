@@ -80,8 +80,28 @@ class LLMClient:
                 config=config
             )
             
-            # Extract text
-            response_text = response.text if hasattr(response, 'text') else ""
+            # Extract text - handle various response formats
+            response_text = ""
+            if hasattr(response, 'text') and response.text:
+                response_text = response.text
+            elif hasattr(response, 'candidates') and response.candidates:
+                # Try to get text from candidates
+                for candidate in response.candidates:
+                    if hasattr(candidate, 'content') and candidate.content:
+                        if hasattr(candidate.content, 'parts') and candidate.content.parts:
+                            for part in candidate.content.parts:
+                                if hasattr(part, 'text') and part.text:
+                                    response_text = part.text
+                                    break
+                    if response_text:
+                        break
+            
+            # Safety check - ensure we have actual content
+            if not response_text or response_text.strip() == "":
+                logger.warning(f"LLM returned empty response, raw: {response}")
+                if response_format == "json":
+                    return {}
+                return ""
             
             # Parse JSON if requested
             if response_format == "json":

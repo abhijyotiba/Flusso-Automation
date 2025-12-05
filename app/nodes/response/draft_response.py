@@ -218,8 +218,20 @@ RETRIEVED CONTEXT:
         llm_duration = time.time() - llm_start
         logger.info(f"{STEP_NAME} | ✓ LLM response in {llm_duration:.2f}s")
 
-        # Ensure we end up with a string
-        response_text = raw_response if isinstance(raw_response, str) else str(raw_response)
+        # Ensure we end up with a valid string
+        response_text = ""
+        if raw_response is not None:
+            response_text = str(raw_response).strip()
+        
+        # Check if response is actually valid (not empty, not "None", minimum length)
+        if not response_text or response_text.lower() == "none" or len(response_text) < 20:
+            logger.warning(f"{STEP_NAME} | ⚠ LLM returned invalid response: '{response_text}' - using fallback")
+            response_text = (
+                f"Thank you for reaching out about: {subject}\n\n"
+                "We have received your request and our team is reviewing the details. "
+                "We will get back to you shortly with a detailed response.\n\n"
+                "If you have any additional information to share, please reply to this ticket."
+            )
         
         # Calculate overall confidence score (0-100%)
         # Based on: product confidence (40%), hallucination risk inverted (40%), enough_info (20%)
