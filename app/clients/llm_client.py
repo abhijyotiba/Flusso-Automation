@@ -30,7 +30,7 @@ class LLMClient:
         self.temperature = settings.llm_temperature
         self.max_tokens = settings.llm_max_tokens
         
-        logger.info(f"LLM client initialized with model: {self.model_name}")
+        logger.info(f"LLM client initialized with model: {self.model_name}, max_tokens: {self.max_tokens}")
     
     def call_llm(
         self,
@@ -59,7 +59,8 @@ class LLMClient:
         # Combine prompts
         full_prompt = f"{system_prompt}\n\n{user_prompt}"
         
-        logger.debug(f"Calling LLM (temperature={temp}, max_tokens={max_tok})...")
+        logger.info(f"📤 LLM Request: model={self.model_name}, temperature={temp}, max_tokens={max_tok}")
+        logger.debug(f"📤 Prompt length: {len(full_prompt)} chars")
         
         try:
             # Build config
@@ -80,6 +81,39 @@ class LLMClient:
                 config=config
             )
             
+            # === DETAILED RESPONSE DEBUGGING ===
+            finish_reason = None
+            token_count = None
+            
+            # Check for finish reason and token usage
+            if hasattr(response, 'candidates') and response.candidates:
+                candidate = response.candidates[0]
+                if hasattr(candidate, 'finish_reason'):
+                    finish_reason = candidate.finish_reason
+                    logger.info(f"📥 LLM finish_reason: {finish_reason}")
+                    
+                    # Check if response was truncated
+                    if str(finish_reason).upper() in ['MAX_TOKENS', 'LENGTH', 'STOP_LIMIT']:
+                        logger.warning(f"⚠️ LLM RESPONSE TRUNCATED! finish_reason={finish_reason}. Consider increasing max_tokens (current: {max_tok})")
+                
+                # Try to get token count
+                if hasattr(candidate, 'token_count'):
+                    token_count = candidate.token_count
+                    logger.info(f"📥 LLM tokens used: {token_count}")
+            
+            # Check usage metadata if available
+            if hasattr(response, 'usage_metadata'):
+                usage = response.usage_metadata
+                if usage:
+                    prompt_tokens = getattr(usage, 'prompt_token_count', 'N/A')
+                    output_tokens = getattr(usage, 'candidates_token_count', 'N/A')
+                    total_tokens = getattr(usage, 'total_token_count', 'N/A')
+                    logger.info(f"📊 Token usage: prompt={prompt_tokens}, output={output_tokens}, total={total_tokens}")
+                    
+                    # Warn if output tokens is close to max
+                    if isinstance(output_tokens, int) and output_tokens >= max_tok * 0.95:
+                        logger.warning(f"⚠️ Output tokens ({output_tokens}) is at/near max_tokens limit ({max_tok})! Response likely truncated!")
+            
             # Extract text - handle various response formats
             response_text = ""
             if hasattr(response, 'text') and response.text:
@@ -96,12 +130,24 @@ class LLMClient:
                     if response_text:
                         break
             
+            # Log response details
+            logger.info(f"📥 LLM Response: {len(response_text)} chars received")
+            logger.debug(f"📥 Response preview: {response_text[:200]}..." if len(response_text) > 200 else f"📥 Full response: {response_text}")
+            
             # Safety check - ensure we have actual content
             if not response_text or response_text.strip() == "":
-                logger.warning(f"LLM returned empty response, raw: {response}")
+                logger.warning(f"⚠️ LLM returned empty response!")
+                logger.warning(f"Raw response object: {response}")
                 if response_format == "json":
                     return {}
                 return ""
+            
+            # Check for incomplete responses (missing expected sections)
+            expected_sections = ["## 🎫 TICKET ANALYSIS", "## 🔧 PRODUCT IDENTIFICATION", "## 💡 SUGGESTED ACTIONS", "## 📝 SUGGESTED RESPONSE"]
+            missing_sections = [s for s in expected_sections if s not in response_text]
+            if missing_sections and response_format != "json":
+                logger.warning(f"⚠️ Response may be incomplete! Missing sections: {missing_sections}")
+                logger.warning(f"Response ends with: ...{response_text[-100:]}" if len(response_text) > 100 else f"Full response: {response_text}")
             
             # Parse JSON if requested
             if response_format == "json":
@@ -116,7 +162,7 @@ class LLMClient:
             return response_text
             
         except Exception as e:
-            logger.error(f"Error calling LLM: {e}")
+            logger.error(f"❌ Error calling LLM: {e}", exc_info=True)
             
             # Return safe defaults
             if response_format == "json":

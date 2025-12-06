@@ -1,18 +1,19 @@
 """
 Draft Final Response Node
 Generates customer-facing response based on all analysis.
+Enhanced with source citations for human agent review.
 """
 
 import logging
 import time
 import re
 from datetime import datetime
-from typing import Dict, Any
+from typing import Dict, Any, List
 
 from app.graph.state import TicketState
 from app.utils.audit import add_audit_event
 from app.clients.llm_client import call_llm
-from app.config.constants import DRAFT_RESPONSE_PROMPT
+from app.config.constants import DRAFT_RESPONSE_PROMPT, ENHANCED_DRAFT_RESPONSE_PROMPT
 from app.utils.detailed_logger import (
     log_node_start, log_node_complete, log_llm_interaction
 )
@@ -113,6 +114,135 @@ def convert_to_html(text: str) -> str:
     return html
 
 
+def build_sources_html(
+    source_documents: List[Dict[str, Any]],
+    source_products: List[Dict[str, Any]],
+    source_tickets: List[Dict[str, Any]],
+    vision_quality: str = "LOW"
+) -> str:
+    """
+    Build HTML section displaying all sources for the human agent.
+    """
+    sections = []
+    
+    # === RELEVANT DOCUMENTS ===
+    if source_documents:
+        doc_rows = ""
+        for doc in source_documents[:5]:  # Limit to 5
+            title = doc.get('title', 'Unknown Document')[:50]
+            score = doc.get('relevance_score', 0)
+            stars = "⭐⭐⭐" if score >= 0.85 else "⭐⭐" if score >= 0.7 else "⭐"
+            doc_rows += f"""
+            <tr>
+                <td style="padding: 8px; border-bottom: 1px solid #e5e7eb;">{doc.get('rank', '-')}</td>
+                <td style="padding: 8px; border-bottom: 1px solid #e5e7eb;">{title}</td>
+                <td style="padding: 8px; border-bottom: 1px solid #e5e7eb; text-align: center;">{stars}</td>
+            </tr>"""
+        
+        sections.append(f"""
+        <div style="margin-bottom: 20px;">
+            <h4 style="color: #1e40af; margin-bottom: 10px;">📄 Relevant Documents</h4>
+            <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+                <thead>
+                    <tr style="background: #f3f4f6;">
+                        <th style="padding: 8px; text-align: left; width: 40px;">#</th>
+                        <th style="padding: 8px; text-align: left;">Document</th>
+                        <th style="padding: 8px; text-align: center; width: 80px;">Relevance</th>
+                    </tr>
+                </thead>
+                <tbody>{doc_rows}</tbody>
+            </table>
+        </div>""")
+    
+    # === VISUAL MATCHES ===
+    if source_products and vision_quality != "CATEGORY_MISMATCH":
+        product_rows = ""
+        for prod in source_products[:5]:  # Limit to 5
+            title = prod.get('product_title', 'Unknown')[:40]
+            model = prod.get('model_no', 'N/A')
+            score = prod.get('similarity_score', 0)
+            match_icon = prod.get('match_level', '🟡')
+            product_rows += f"""
+            <tr>
+                <td style="padding: 8px; border-bottom: 1px solid #e5e7eb;">{match_icon}</td>
+                <td style="padding: 8px; border-bottom: 1px solid #e5e7eb;">{title}</td>
+                <td style="padding: 8px; border-bottom: 1px solid #e5e7eb; font-family: monospace;">{model}</td>
+                <td style="padding: 8px; border-bottom: 1px solid #e5e7eb; text-align: center;">{score}%</td>
+            </tr>"""
+        
+        quality_badge = {
+            "HIGH": '<span style="background: #22c55e; color: white; padding: 2px 8px; border-radius: 4px; font-size: 11px;">HIGH CONFIDENCE</span>',
+            "LOW": '<span style="background: #eab308; color: white; padding: 2px 8px; border-radius: 4px; font-size: 11px;">LOW CONFIDENCE</span>',
+            "NO_MATCH": '<span style="background: #6b7280; color: white; padding: 2px 8px; border-radius: 4px; font-size: 11px;">NO MATCH</span>',
+        }.get(vision_quality, '')
+        
+        sections.append(f"""
+        <div style="margin-bottom: 20px;">
+            <h4 style="color: #1e40af; margin-bottom: 10px;">🖼️ Visual Matches {quality_badge}</h4>
+            <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+                <thead>
+                    <tr style="background: #f3f4f6;">
+                        <th style="padding: 8px; text-align: left; width: 30px;"></th>
+                        <th style="padding: 8px; text-align: left;">Product</th>
+                        <th style="padding: 8px; text-align: left; width: 120px;">Model</th>
+                        <th style="padding: 8px; text-align: center; width: 60px;">Match</th>
+                    </tr>
+                </thead>
+                <tbody>{product_rows}</tbody>
+            </table>
+        </div>""")
+    elif vision_quality == "CATEGORY_MISMATCH":
+        sections.append(f"""
+        <div style="margin-bottom: 20px; background: #fef2f2; border: 1px solid #fecaca; border-radius: 8px; padding: 12px;">
+            <h4 style="color: #dc2626; margin-bottom: 8px;">🖼️ Visual Matches ❌ CATEGORY MISMATCH</h4>
+            <p style="margin: 0; font-size: 13px; color: #991b1b;">Visual search found products from a different category than what the customer is asking about. These results have been excluded.</p>
+        </div>""")
+    
+    # === PAST TICKETS ===
+    if source_tickets:
+        ticket_rows = ""
+        for ticket in source_tickets[:5]:  # Limit to 5
+            ticket_id = ticket.get('ticket_id', 'N/A')
+            subject = ticket.get('subject', 'Unknown')[:45]
+            score = ticket.get('similarity_score', 0)
+            ticket_rows += f"""
+            <tr>
+                <td style="padding: 8px; border-bottom: 1px solid #e5e7eb; font-family: monospace; color: #6366f1;">#{ticket_id}</td>
+                <td style="padding: 8px; border-bottom: 1px solid #e5e7eb;">{subject}</td>
+                <td style="padding: 8px; border-bottom: 1px solid #e5e7eb; text-align: center;">{score}%</td>
+            </tr>"""
+        
+        sections.append(f"""
+        <div style="margin-bottom: 20px;">
+            <h4 style="color: #1e40af; margin-bottom: 10px;">🎫 Similar Past Tickets</h4>
+            <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+                <thead>
+                    <tr style="background: #f3f4f6;">
+                        <th style="padding: 8px; text-align: left; width: 80px;">Ticket</th>
+                        <th style="padding: 8px; text-align: left;">Subject</th>
+                        <th style="padding: 8px; text-align: center; width: 70px;">Similarity</th>
+                    </tr>
+                </thead>
+                <tbody>{ticket_rows}</tbody>
+            </table>
+        </div>""")
+    
+    if not sections:
+        return """
+        <div style="background: #fef3c7; border: 1px solid #fcd34d; border-radius: 8px; padding: 12px; margin-top: 20px;">
+            <p style="margin: 0; color: #92400e; font-size: 13px;">⚠️ No source documents, product matches, or similar tickets were found for this request.</p>
+        </div>"""
+    
+    # Wrap all sections in a sources container
+    sources_html = f"""
+    <div style="margin-top: 24px; padding-top: 20px; border-top: 2px solid #e5e7eb;">
+        <h3 style="color: #374151; font-size: 16px; margin-bottom: 16px;">📎 SOURCES</h3>
+        {''.join(sections)}
+    </div>"""
+    
+    return sources_html
+
+
 def draft_final_response(state: TicketState) -> Dict[str, Any]:
     """
     Generate final response to customer.
@@ -144,6 +274,12 @@ def draft_final_response(state: TicketState) -> Dict[str, Any]:
     vision_matched_cat = state.get("vision_matched_category", "")
     vision_expected_cat = state.get("vision_expected_category", "")
     
+    # === Source data for citations ===
+    source_documents = state.get("source_documents", []) or []
+    source_products = state.get("source_products", []) or []
+    source_tickets = state.get("source_tickets", []) or []
+    gemini_answer = state.get("gemini_answer", "") or ""
+    
     node_log.input_summary = {
         "subject": subject[:100],
         "ticket_text_length": len(ticket_text),
@@ -152,12 +288,16 @@ def draft_final_response(state: TicketState) -> Dict[str, Any]:
         "hallucination_risk": risk,
         "product_confidence": confidence,
         "vip_compliant": vip_ok,
-        "vision_quality": vision_quality
+        "vision_quality": vision_quality,
+        "source_documents_count": len(source_documents),
+        "source_products_count": len(source_products),
+        "source_tickets_count": len(source_tickets)
     }
     
     logger.info(f"{STEP_NAME} | 📥 Input: subject='{subject[:50]}...', context_len={len(context)}")
     logger.info(f"{STEP_NAME} | 📊 Metrics: enough_info={enough_info}, risk={risk:.2f}, confidence={confidence:.2f}, vip_ok={vip_ok}")
     logger.info(f"{STEP_NAME} | 🖼 Vision: quality={vision_quality}")
+    logger.info(f"{STEP_NAME} | 📎 Sources: docs={len(source_documents)}, products={len(source_products)}, tickets={len(source_tickets)}")
 
     # Build vision quality guidance for the LLM
     vision_guidance = ""
@@ -215,11 +355,12 @@ RETRIEVED CONTEXT:
 """
 
     try:
-        logger.info(f"{STEP_NAME} | 🔄 Calling LLM to generate response...")
+        logger.info(f"{STEP_NAME} | 🔄 Calling LLM to generate enhanced response...")
         llm_start = time.time()
         
+        # Use enhanced prompt for structured response
         raw_response = call_llm(
-            system_prompt=DRAFT_RESPONSE_PROMPT,
+            system_prompt=ENHANCED_DRAFT_RESPONSE_PROMPT,
             user_prompt=user_prompt,
             response_format=None,  # plain text
         )
@@ -264,6 +405,14 @@ RETRIEVED CONTEXT:
         # Convert markdown-style formatting in response to HTML
         html_response = convert_to_html(response_text)
         
+        # === Build sources section ===
+        sources_html = build_sources_html(
+            source_documents=source_documents,
+            source_products=source_products,
+            source_tickets=source_tickets,
+            vision_quality=vision_quality
+        )
+        
         # Build HTML confidence header for Freshdesk
         confidence_header = f"""<div style="background: linear-gradient(135deg, #1e3a5f 0%, #2d5a87 100%); border-radius: 8px; padding: 16px; margin-bottom: 20px; font-family: Arial, sans-serif;">
     <div style="display: flex; align-items: center; margin-bottom: 12px;">
@@ -288,7 +437,8 @@ RETRIEVED CONTEXT:
 </div>
 
 """
-        response_with_confidence = confidence_header + html_response
+        # Combine: confidence header + response + sources
+        response_with_confidence = confidence_header + html_response + sources_html
 
         duration = time.time() - start_time
         logger.info(f"{STEP_NAME} | ✅ Generated response ({len(response_text)} chars) in {duration:.2f}s")
@@ -298,7 +448,7 @@ RETRIEVED CONTEXT:
         # Log LLM interaction
         log_llm_interaction(
             node_log,
-            system_prompt=DRAFT_RESPONSE_PROMPT,
+            system_prompt=ENHANCED_DRAFT_RESPONSE_PROMPT,
             user_prompt=user_prompt,
             response=response_text
         )
@@ -308,7 +458,10 @@ RETRIEVED CONTEXT:
                 "response_length": len(response_text),
                 "overall_confidence": overall_confidence,
                 "confidence_label": confidence_label,
-                "duration_seconds": duration
+                "duration_seconds": duration,
+                "source_documents_count": len(source_documents),
+                "source_products_count": len(source_products),
+                "source_tickets_count": len(source_tickets)
             },
             llm_response=response_text
         )
@@ -325,6 +478,9 @@ RETRIEVED CONTEXT:
                     "llm_duration_seconds": llm_duration,
                     "overall_confidence": overall_confidence,
                     "confidence_label": confidence_label,
+                    "source_documents_count": len(source_documents),
+                    "source_products_count": len(source_products),
+                    "source_tickets_count": len(source_tickets),
                 },
             )["audit_events"],
         }

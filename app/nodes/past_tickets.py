@@ -5,7 +5,7 @@ Queries Pinecone resolved tickets DB
 
 import logging
 import time
-from typing import Dict, Any
+from typing import Dict, Any, List
 
 from app.graph.state import TicketState
 from app.utils.audit import add_audit_event
@@ -84,15 +84,34 @@ def retrieve_past_tickets(state: TicketState) -> Dict[str, Any]:
                 "resolution": h.get("metadata", {}).get("resolution", "N/A")
             } for i, h in enumerate(hits)]
         )
+        
+        # === Build structured source_tickets for citations ===
+        source_tickets = []
+        for i, hit in enumerate(hits[:5]):  # Limit to top 5 for display
+            meta = hit.get("metadata", {}) or {}
+            score = hit.get("score", 0)
+            
+            source_tickets.append({
+                "rank": i + 1,
+                "ticket_id": meta.get("ticket_id", "N/A"),
+                "subject": meta.get("subject", "Unknown Subject"),
+                "resolution_type": meta.get("resolution_type", "N/A"),
+                "resolution_summary": meta.get("resolution", meta.get("resolution_summary", ""))[:200],
+                "similarity_score": round(score * 100),  # As percentage
+                "source_type": "past_tickets"
+            })
+        
+        logger.info(f"{STEP_NAME} | 🎫 Created {len(source_tickets)} structured ticket sources")
 
         return {
             "past_ticket_results": hits,
+            "source_tickets": source_tickets,
             "ran_past_tickets": True,
             "audit_events": add_audit_event(
                 state,
                 "retrieve_past_tickets",
                 "SEARCH",
-                {"results_count": len(hits), "duration_seconds": duration},
+                {"results_count": len(hits), "source_tickets_count": len(source_tickets), "duration_seconds": duration},
             )["audit_events"],
         }
 
@@ -102,6 +121,7 @@ def retrieve_past_tickets(state: TicketState) -> Dict[str, Any]:
 
         return {
             "past_ticket_results": [],
+            "source_tickets": [],
             "ran_past_tickets": True,
             "audit_events": add_audit_event(
                 state,

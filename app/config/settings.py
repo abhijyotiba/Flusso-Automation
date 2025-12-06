@@ -54,8 +54,8 @@ class Settings(BaseSettings):
     # RAG SETTINGS
     # ==========================================
     text_retrieval_top_k: int = 10
-    image_retrieval_top_k: int = 5
-    past_ticket_top_k: int = 5
+    image_retrieval_top_k: int = 4
+    past_ticket_top_k: int = 3
     
     # ==========================================
     # DECISION THRESHOLDS
@@ -70,7 +70,7 @@ class Settings(BaseSettings):
     # ==========================================
     llm_model: str = "gemini-2.5-flash"
     llm_temperature: float = 0.2
-    llm_max_tokens: int = 2048
+    llm_max_tokens: int = 8192  # Increased for complete structured responses
     
     # ==========================================
     # CLIP SETTINGS (for image embeddings - 512 dimensions)

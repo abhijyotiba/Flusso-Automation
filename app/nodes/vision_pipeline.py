@@ -264,6 +264,35 @@ def process_vision_pipeline(state: TicketState) -> Dict[str, Any]:
             "full_metadata": h.get("metadata", {})
         } for i, h in enumerate(all_hits)]
     )
+    
+    # === Build structured source_products for citations ===
+    source_products: List[Dict[str, Any]] = []
+    for i, hit in enumerate(all_hits[:10]):  # Limit to top 10 for display
+        meta = hit.get("metadata", {}) or {}
+        score = hit.get("score", 0)
+        
+        # Determine match quality indicator
+        if score >= 0.85:
+            match_level = "🟢"  # High match
+        elif score >= 0.70:
+            match_level = "🟡"  # Medium match
+        else:
+            match_level = "🔴"  # Low match
+        
+        source_products.append({
+            "rank": i + 1,
+            "product_title": meta.get("product_title", meta.get("product_name", "Unknown Product")),
+            "model_no": meta.get("model_no", meta.get("model_number", "N/A")),
+            "finish": meta.get("finish", "N/A"),
+            "category": meta.get("product_category", meta.get("category", "Unknown")),
+            "sub_category": meta.get("sub_category", ""),
+            "collection": meta.get("collection", ""),
+            "similarity_score": round(score * 100),  # As percentage
+            "match_level": match_level,
+            "source_type": "vision_search"
+        })
+    
+    logger.info(f"{STEP_NAME} | 📦 Created {len(source_products)} structured product sources")
 
     return {
         "image_retrieval_results": all_hits,
@@ -271,6 +300,7 @@ def process_vision_pipeline(state: TicketState) -> Dict[str, Any]:
         "vision_relevance_reason": vision_reason,
         "vision_matched_category": matched_cat,
         "vision_expected_category": expected_cat,
+        "source_products": source_products,
         "ran_vision": True,
         "audit_events": add_audit_event(
             state,
@@ -279,6 +309,7 @@ def process_vision_pipeline(state: TicketState) -> Dict[str, Any]:
             {
                 "image_count": len(images),
                 "results_count": len(all_hits),
+                "source_products_count": len(source_products),
                 "duration_seconds": duration,
                 "vision_quality": vision_quality,
                 "vision_reason": vision_reason

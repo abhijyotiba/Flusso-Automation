@@ -86,6 +86,14 @@ class TicketState(TypedDict, total=False):
     multimodal_context: str
     
     # ==========================================
+    # SOURCE CITATIONS (for enhanced response)
+    # ==========================================
+    gemini_answer: Optional[str]  # Raw answer from Gemini file search
+    source_documents: List[Dict[str, Any]]  # Structured docs from Gemini grounding
+    source_products: List[Dict[str, Any]]   # Structured products from Vision
+    source_tickets: List[Dict[str, Any]]    # Structured tickets from Past Tickets
+    
+    # ==========================================
     # VISION MATCH QUALITY (new fields)
     # ==========================================
     vision_match_quality: Optional[str]  # "HIGH", "LOW", "NO_MATCH", "CATEGORY_MISMATCH"
