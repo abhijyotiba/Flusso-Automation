@@ -202,8 +202,11 @@ def build_sources_html(
     if source_tickets:
         ticket_rows = ""
         for ticket in source_tickets[:5]:  # Limit to 5
+            if not ticket or not isinstance(ticket, dict):
+                continue
             ticket_id = ticket.get('ticket_id', 'N/A')
-            subject = ticket.get('subject', 'Unknown')[:45]
+            subject_raw = ticket.get('subject', 'Unknown') or 'Unknown'
+            subject = str(subject_raw)[:45]
             score = ticket.get('similarity_score', 0)
             ticket_rows += f"""
             <tr>

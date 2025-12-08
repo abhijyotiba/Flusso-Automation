@@ -1,7 +1,6 @@
 """
-State Model for LangGraph Workflow
-Defines the complete state structure for ticket processing
-Enhanced with ReACT agent fields for intelligent tool orchestration
+State Model for LangGraph Workflow with ReACT Agent
+Enhanced with ReACT reasoning fields
 """
 
 from typing import TypedDict, List, Dict, Any, Optional
@@ -12,11 +11,11 @@ class RetrievalHit(TypedDict):
     id: str
     score: float
     metadata: Dict[str, Any]
-    content: str  # Text chunk, product info, or ticket summary
+    content: str
 
 
 class ReACTIteration(TypedDict):
-    """Single ReACT reasoning iteration tracking"""
+    """Single ReACT reasoning iteration"""
     iteration: int
     thought: str                          # Agent's reasoning
     action: str                           # Tool name called
@@ -30,7 +29,7 @@ class ReACTIteration(TypedDict):
 class TicketState(TypedDict, total=False):
     """
     Complete state object passed between all LangGraph nodes.
-    Each node reads from and updates this state.
+    Enhanced with ReACT agent fields.
     """
 
     # ==========================================
@@ -38,7 +37,7 @@ class TicketState(TypedDict, total=False):
     # ==========================================
     ticket_id: str
     ticket_subject: str
-    ticket_text: str  # Includes description + extracted attachment content
+    ticket_text: str
     ticket_images: List[str]
     requester_email: str
     requester_name: str
@@ -47,19 +46,18 @@ class TicketState(TypedDict, total=False):
     tags: List[str]
     created_at: Optional[str]
     updated_at: Optional[str]
-    ticket_conversation: List[Dict[str, Any]]  # OPTIONAL but recommended
     
     # ==========================================
     # ATTACHMENT INFO
     # ==========================================
-    attachment_summary: List[Dict[str, Any]]  # List of processed attachments with metadata
-
+    attachment_summary: List[Dict[str, Any]]
+    
     # ==========================================
     # REACT AGENT FIELDS (NEW)
     # ==========================================
     react_iterations: List[ReACTIteration]      # Full reasoning chain
-    react_total_iterations: int                  # Count of iterations
-    react_status: str                            # "pending" | "running" | "finished" | "max_iterations"
+    react_total_iterations: int                  # Count
+    react_status: str                            # "running" | "finished" | "max_iterations"
     react_final_reasoning: str                   # Why agent stopped
     
     # Product Identification (from ReACT)
@@ -74,14 +72,7 @@ class TicketState(TypedDict, total=False):
     
     # Attachment Analysis (from ReACT)
     attachment_analysis: Dict[str, Any]           # Extracted model numbers, entities
-
-    # ==========================================
-    # RAG EXECUTION FLAGS (REQUIRED for sequential mode)
-    # ==========================================
-    ran_vision: bool
-    ran_text_rag: bool
-    ran_past_tickets: bool
-
+    
     # ==========================================
     # CLASSIFICATION / ROUTING
     # ==========================================
@@ -90,29 +81,22 @@ class TicketState(TypedDict, total=False):
     has_image: bool
     
     # ==========================================
-    # SKIP LOGIC (for PO, auto-reply, spam)
+    # SKIP LOGIC
     # ==========================================
-    should_skip: bool  # True if ticket should skip full workflow
-    skip_reason: Optional[str]  # Why the ticket was skipped
-    skip_private_note: Optional[str]  # Private note for skipped tickets
-    skip_workflow_applied: bool  # Flag set by skip_handler node
-    category_requires_vision: bool  # Whether category needs vision pipeline
-    category_requires_text_rag: bool  # Whether category needs text RAG
+    should_skip: bool
+    skip_reason: Optional[str]
+    skip_private_note: Optional[str]
+    skip_workflow_applied: bool
     
-    # Fields set by skip_handler
-    suggested_tags: List[str]  # Tags suggested for skipped tickets
-    private_note: Optional[str]  # Private note content
-    resolution_decision: Optional[str]  # skip_workflow, resolved, etc.
-
     # ==========================================
     # CUSTOMER PROFILE / RULES
     # ==========================================
     customer_type: Optional[str]
     customer_metadata: Dict[str, Any]
     vip_rules: Dict[str, Any]
-
+    
     # ==========================================
-    # RAG RESULTS
+    # LEGACY RAG RESULTS (Still populated for compatibility)
     # ==========================================
     text_retrieval_results: List[RetrievalHit]
     image_retrieval_results: List[RetrievalHit]
@@ -120,37 +104,37 @@ class TicketState(TypedDict, total=False):
     multimodal_context: str
     
     # ==========================================
-    # SOURCE CITATIONS (for enhanced response)
+    # SOURCE CITATIONS
     # ==========================================
-    gemini_answer: Optional[str]  # Raw answer from Gemini file search
-    source_documents: List[Dict[str, Any]]  # Structured docs from Gemini grounding
-    source_products: List[Dict[str, Any]]   # Structured products from Vision
-    source_tickets: List[Dict[str, Any]]    # Structured tickets from Past Tickets
+    gemini_answer: Optional[str]
+    source_documents: List[Dict[str, Any]]
+    source_products: List[Dict[str, Any]]
+    source_tickets: List[Dict[str, Any]]
     
     # ==========================================
-    # VISION MATCH QUALITY (new fields)
+    # VISION MATCH QUALITY (Legacy, still used by draft_response)
     # ==========================================
-    vision_match_quality: Optional[str]  # "HIGH", "LOW", "NO_MATCH", "CATEGORY_MISMATCH"
-    vision_relevance_reason: Optional[str]  # Explanation for the quality assessment
-    vision_matched_category: Optional[str]  # What category the vision matched (e.g., "Sink Faucets")
-    vision_expected_category: Optional[str]  # What the customer is asking about (e.g., "Shower Hinges")
-
+    vision_match_quality: Optional[str]
+    vision_relevance_reason: Optional[str]
+    vision_matched_category: Optional[str]
+    vision_expected_category: Optional[str]
+    
     # ==========================================
-    # PRODUCT / DECISION METRICS
+    # DECISION METRICS
     # ==========================================
-    detected_product_id: Optional[str]   # OPTIONAL but recommended
+    detected_product_id: Optional[str]
     product_match_confidence: float
     hallucination_risk: float
     enough_information: bool
     vip_compliant: bool
-    overall_confidence: float  # Combined confidence score (0-100%)
-
+    overall_confidence: float
+    
     # ==========================================
     # LLM OUTPUTS
     # ==========================================
     clarification_message: Optional[str]
     draft_response: Optional[str]
-
+    
     # ==========================================
     # FINAL OUTCOME
     # ==========================================
@@ -158,7 +142,10 @@ class TicketState(TypedDict, total=False):
     final_private_note: Optional[str]
     resolution_status: Optional[str]
     extra_tags: List[str]
-
+    suggested_tags: List[str]
+    private_note: Optional[str]
+    resolution_decision: Optional[str]
+    
     # ==========================================
     # AUDIT TRAIL
     # ==========================================
