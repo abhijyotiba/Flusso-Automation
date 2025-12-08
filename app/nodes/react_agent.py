@@ -1,6 +1,6 @@
 """
-ReACT Agent Node - Reasoning + Acting Loop
-Uses Gemini 2.0 Flash Pro to intelligently gather information
+ReACT Agent Node - FIXED VERSION
+Reasoning + Acting Loop with proper context tracking
 """
 
 import logging
@@ -12,7 +12,6 @@ from app.graph.state import TicketState, ReACTIteration
 from app.clients.llm_client import get_llm_client
 from app.utils.audit import add_audit_event
 
-# Import helper functions
 from app.nodes.react_agent_helpers import (
     _build_agent_context,
     _execute_tool,
@@ -22,109 +21,79 @@ from app.nodes.react_agent_helpers import (
 logger = logging.getLogger(__name__)
 STEP_NAME = "🤖 REACT_AGENT"
 
-# Maximum iterations to prevent infinite loops
 MAX_ITERATIONS = 15
 
-# ReACT System Prompt
+# IMPROVED System Prompt
 REACT_SYSTEM_PROMPT = """You are an intelligent support agent helping resolve customer tickets for a plumbing fixtures company.
 
 Your goal: Gather ALL necessary information to help the customer by using available tools strategically.
 
 AVAILABLE TOOLS:
-1. product_search_tool - Search products by model number or description (Pinecone metadata)
-2. document_search_tool - Find installation guides, manuals, FAQs (Gemini File Search)
-3. vision_search_tool - Identify products from customer images (CLIP visual similarity)
-4. past_tickets_search_tool - Find similar resolved tickets (historical patterns)
-5. attachment_analyzer_tool - Extract info from PDFs/invoices (model numbers, order details)
-6. finish_tool - Submit final context when ready (REQUIRED to complete)
+1. **attachment_analyzer_tool** - Extract model numbers from PDFs/invoices (USE FIRST if attachments present!)
+2. **product_search_tool** - Search products by model number or description
+3. **vision_search_tool** - Identify products from customer images
+4. **document_search_tool** - Find installation guides, manuals, FAQs
+5. **past_tickets_search_tool** - Find similar resolved tickets
+6. **finish_tool** - Submit final context when ready (REQUIRED to complete)
 
-REASONING PROCESS (ReACT):
-Each iteration, you must:
-1. **Thought**: Analyze what you know and what's missing
-2. **Action**: Choose ONE tool to use next
-3. **Action Input**: Provide parameters for the tool
-4. **Observation**: Receive tool output
-5. **Repeat** until you have enough information OR max iterations reached
+CRITICAL RULES:
+1. **ALWAYS call finish_tool when you have gathered information** - This is MANDATORY
+2. If you have attachments, START with attachment_analyzer_tool to extract model numbers
+3. Once you find a model number, use product_search_tool to verify it exists
+4. Use vision_search ONLY if no model number found and customer sent images
+5. Search documents AFTER identifying the product
+6. Check past tickets ONCE near the end
+7. You MUST call finish_tool within {MAX_ITERATIONS} iterations
 
-STRATEGIC GUIDELINES:
-- Start with attachment_analyzer if PDFs/documents present (may contain model numbers)
-- Use product_search FIRST if model number is mentioned in text
-- Use vision_search if customer attached product images
-- Only search documents AFTER you know the product
-- Check past_tickets once you've identified the product
-- Call finish_tool when you have sufficient context
+STOPPING CONDITIONS (call finish_tool when ANY is true):
+- ✅ Product identified + found relevant docs/images/tickets
+- ✅ Searched all available sources (attachments, text, images)
+- ✅ Iteration count >= {MAX_ITERATIONS - 2} (URGENT: finish NOW)
+- ✅ Customer query is simple and you have enough basic info
 
-PRODUCT IDENTIFICATION PRIORITY:
-1. Exact model number in text → product_search_tool(model_number="...")
-2. Model in PDF attachment → attachment_analyzer_tool → then product_search
-3. Customer image → vision_search_tool → validate with product_search
-4. Vague description → product_search_tool(query="...") → narrow down
-
-STOPPING CONDITIONS:
-- You MUST call finish_tool when:
-  a) Product identified + found relevant docs/images/tickets
-  b) Searched all available sources
-  c) Iteration count approaching maximum
-  
-You MUST respond in this EXACT JSON format:
-{
+RESPONSE FORMAT (JSON ONLY):
+{{
     "thought": "What I know and what I need next...",
     "action": "tool_name",
-    "action_input": {
-        "param1": "value1",
-        "param2": "value2"
-    }
-}
+    "action_input": {{"param": "value"}}
+}}
 
-OR when ready to finish:
-{
+OR when finishing:
+{{
     "thought": "I have gathered sufficient information...",
     "action": "finish_tool",
-    "action_input": {
+    "action_input": {{
         "product_identified": true/false,
-        "product_details": {"model": "...", "name": "...", "category": "..."},
+        "product_details": {{"model": "...", "name": "...", "category": "..."}},
         "relevant_documents": [...],
         "relevant_images": [...],
         "past_tickets": [...],
         "confidence": 0.85,
-        "reasoning": "Explain what you found..."
-    }
-}
+        "reasoning": "Summary of what was found..."
+    }}
+}}
 
-CRITICAL RULES:
-- ONE tool per iteration
-- ALWAYS call finish_tool before max iterations
-- Be strategic - don't repeat failed searches
-- Cross-validate: vision results → confirm with product_search
-- Prioritize accuracy over speed"""
+IMPORTANT: 
+- If iteration >= {MAX_ITERATIONS - 2}, you MUST call finish_tool immediately
+- Don't repeat failed searches
+- Be strategic - prioritize high-value tools first"""
 
 
 def react_agent_loop(state: TicketState) -> Dict[str, Any]:
     """
-    Main ReACT agent loop - iteratively gathers information
-    
-    Returns:
-        Updated state with:
-        - react_iterations
-        - react_status
-        - identified_product
-        - gathered_documents
-        - gathered_images
-        - gathered_past_tickets
+    Main ReACT agent loop with IMPROVED stopping logic
     """
     start_time = time.time()
     logger.info(f"{STEP_NAME} | ▶ Starting ReACT agent loop")
     
-    # Extract ticket info
     ticket_id = state.get("ticket_id", "unknown")
     ticket_subject = state.get("ticket_subject", "")
     ticket_text = state.get("ticket_text", "")
     ticket_images = state.get("ticket_images", [])
     attachments = state.get("attachment_summary", [])
     
-    logger.info(f"{STEP_NAME} | Ticket #{ticket_id}: {len(ticket_text)} chars text, {len(ticket_images)} images, {len(attachments)} attachments")
+    logger.info(f"{STEP_NAME} | Ticket #{ticket_id}: {len(ticket_text)} chars, {len(ticket_images)} images, {len(attachments)} attachments")
     
-    # Initialize ReACT state
     iterations: List[ReACTIteration] = []
     tool_results = {
         "product_search": None,
@@ -134,20 +103,54 @@ def react_agent_loop(state: TicketState) -> Dict[str, Any]:
         "attachment_analysis": None
     }
     
-    # Track what we've gathered
     identified_product = None
     gathered_documents = []
     gathered_images = []
     gathered_past_tickets = []
     product_confidence = 0.0
+    gemini_answer = ""
     
     llm = get_llm_client()
     
-    # Main ReACT loop
+    # Track what we've tried to avoid repetition
+    tools_used = set()
+    
     for iteration_num in range(1, MAX_ITERATIONS + 1):
         logger.info(f"\n{STEP_NAME} | ═══ ITERATION {iteration_num}/{MAX_ITERATIONS} ═══")
         
-        # Build context for agent
+        # CRITICAL: Force finish if approaching limit
+        if iteration_num >= MAX_ITERATIONS - 1:
+            logger.warning(f"{STEP_NAME} | ⚠️ FORCING FINISH - max iterations reached!")
+            
+            # Build finish tool input from what we have
+            finish_input = {
+                "product_identified": identified_product is not None,
+                "product_details": identified_product or {},
+                "relevant_documents": gathered_documents,
+                "relevant_images": gathered_images,
+                "past_tickets": gathered_past_tickets,
+                "confidence": 0.5,
+                "reasoning": f"Max iterations ({MAX_ITERATIONS}) reached. Gathered available information."
+            }
+            
+            # Execute finish tool directly
+            from app.tools.finish import finish_tool
+            tool_output = finish_tool.invoke(finish_input)
+            
+            iterations.append({
+                "iteration": iteration_num,
+                "thought": "Max iterations reached - forcing completion",
+                "action": "finish_tool",
+                "action_input": finish_input,
+                "observation": "Workflow completed",
+                "tool_output": tool_output,
+                "timestamp": time.time(),
+                "duration": 0.0
+            })
+            
+            break
+        
+        # Build context with clear progress indicators
         agent_context = _build_agent_context(
             ticket_subject=ticket_subject,
             ticket_text=ticket_text,
@@ -159,16 +162,15 @@ def react_agent_loop(state: TicketState) -> Dict[str, Any]:
             max_iterations=MAX_ITERATIONS
         )
         
-        # Call Gemini to reason about next action
         try:
             iteration_start = time.time()
             
-            logger.info(f"{STEP_NAME} | 🧠 Calling Gemini 2.5 Flash Pro for reasoning...")
+            logger.info(f"{STEP_NAME} | 🧠 Calling Gemini for reasoning...")
             response = llm.call_llm(
                 system_prompt=REACT_SYSTEM_PROMPT,
                 user_prompt=agent_context,
                 response_format="json",
-                temperature=0.3,  # Balance creativity with consistency
+                temperature=0.2,  # Lower temperature for more consistent decisions
                 max_tokens=2048
             )
             
@@ -182,16 +184,69 @@ def react_agent_loop(state: TicketState) -> Dict[str, Any]:
             
             logger.info(f"{STEP_NAME} | 💭 Thought: {thought}")
             logger.info(f"{STEP_NAME} | 🔧 Action: {action}")
-            logger.info(f"{STEP_NAME} | 📥 Input: {json.dumps(action_input, indent=2)}")
+            logger.info(f"{STEP_NAME} | 📥 Input: {json.dumps(action_input, indent=2)[:200]}")
             
-            # Execute tool
-            tool_output, observation = _execute_tool(
-                action=action,
-                action_input=action_input,
-                ticket_images=ticket_images,
-                attachments=attachments,
-                tool_results=tool_results
-            )
+            # Check if trying to repeat a failed tool
+            tool_key = f"{action}:{json.dumps(action_input, sort_keys=True)}"
+            if tool_key in tools_used and action != "finish_tool":
+                logger.warning(f"{STEP_NAME} | ⚠️ Agent trying to repeat tool: {action}")
+                observation = "This search was already attempted. Try a different approach or call finish_tool."
+                tool_output = {"error": "Duplicate search attempt"}
+            else:
+                # If the agent calls finish_tool without including the gathered context,
+                # inject the already collected resources so downstream nodes get dicts, not bare strings.
+                if action == "finish_tool":
+                    action_input = dict(action_input or {})
+
+                    # Helper to normalize lists from the LLM (can be strings)
+                    def _norm_docs(val):
+                        docs = []
+                        for d in val or []:
+                            if isinstance(d, dict):
+                                docs.append(d)
+                            elif isinstance(d, str):
+                                docs.append({"id": d, "title": d, "content_preview": ""})
+                        return docs
+
+                    def _norm_list(val):
+                        items = []
+                        for x in val or []:
+                            if isinstance(x, dict) or isinstance(x, str):
+                                items.append(x)
+                        return items
+
+                    if not action_input.get("relevant_documents"):
+                        action_input["relevant_documents"] = gathered_documents
+                    else:
+                        action_input["relevant_documents"] = _norm_docs(action_input.get("relevant_documents"))
+
+                    if not action_input.get("relevant_images"):
+                        action_input["relevant_images"] = gathered_images
+                    else:
+                        action_input["relevant_images"] = _norm_list(action_input.get("relevant_images"))
+
+                    if not action_input.get("past_tickets"):
+                        action_input["past_tickets"] = gathered_past_tickets
+                    else:
+                        action_input["past_tickets"] = _norm_list(action_input.get("past_tickets"))
+
+                    if not action_input.get("product_details") and identified_product:
+                        action_input["product_details"] = identified_product
+                    if "product_identified" not in action_input:
+                        action_input["product_identified"] = identified_product is not None
+                    if "confidence" not in action_input:
+                        action_input["confidence"] = product_confidence or 0.5
+
+                # Execute tool
+                tools_used.add(tool_key)
+                tool_output, observation = _execute_tool(
+                    action=action,
+                    action_input=action_input,
+                    ticket_images=ticket_images,
+                    attachments=attachments,
+                    tool_results=tool_results,
+                    identified_product=identified_product
+                )
             
             iteration_duration = time.time() - iteration_start
             
@@ -210,16 +265,81 @@ def react_agent_loop(state: TicketState) -> Dict[str, Any]:
             }
             iterations.append(iteration_record)
             
+            # Extract gathered information from tool outputs
+            if action == "product_search_tool" and tool_output.get("success"):
+                products = tool_output.get("products", [])
+                if products and not identified_product:
+                    top = products[0]
+                    identified_product = {
+                        "model": top.get("model_no"),
+                        "name": top.get("product_title"),
+                        "category": top.get("category"),
+                        "confidence": top.get("similarity_score", 0) / 100
+                    }
+                    product_confidence = identified_product["confidence"]
+                    logger.info(f"{STEP_NAME} | ✅ Product identified: {identified_product['model']}")
+            
+            elif action == "document_search_tool" and tool_output.get("success"):
+                docs = tool_output.get("documents", [])
+                for doc in docs:
+                    if doc not in gathered_documents:
+                        gathered_documents.append(doc)
+                # Store direct Gemini answer for downstream nodes
+                if tool_output.get("gemini_answer"):
+                    gemini_answer = tool_output.get("gemini_answer", "")
+            
+            elif action == "vision_search_tool" and tool_output.get("success"):
+                matches = tool_output.get("matches", [])
+                for match in matches:
+                    img_url = match.get("image_url")
+                    if img_url and img_url not in gathered_images:
+                        gathered_images.append(img_url)
+                
+                # Vision can also identify product
+                if matches and not identified_product:
+                    top = matches[0]
+                    identified_product = {
+                        "model": top.get("model_no"),
+                        "name": top.get("product_title"),
+                        "category": top.get("category"),
+                        "confidence": top.get("similarity_score", 0) / 100
+                    }
+                    product_confidence = identified_product["confidence"]
+            
+            elif action == "past_tickets_search_tool" and tool_output.get("success"):
+                tickets = tool_output.get("tickets", [])
+                for ticket in tickets:
+                    if ticket not in gathered_past_tickets:
+                        gathered_past_tickets.append(ticket)
+            
             # Check if finished
             if action == "finish_tool" and tool_output.get("finished"):
                 logger.info(f"{STEP_NAME} | ✅ Agent called finish_tool - stopping loop")
                 
-                # Extract final results
-                identified_product = tool_output.get("product_details")
-                gathered_documents = tool_output.get("relevant_documents", [])
-                gathered_images = tool_output.get("relevant_images", [])
-                gathered_past_tickets = tool_output.get("past_tickets", [])
-                product_confidence = tool_output.get("confidence", 0.5)
+                # Update from finish tool output
+                identified_product = tool_output.get("product_details", identified_product)
+
+                # Normalize resources returned by finish_tool to dicts/strings we expect
+                def _normalize_docs(docs):
+                    norm = []
+                    for d in docs or []:
+                        if isinstance(d, dict):
+                            norm.append(d)
+                        elif isinstance(d, str):
+                            norm.append({"id": d, "title": d, "content_preview": ""})
+                    return norm
+
+                def _normalize_list(items):
+                    norm = []
+                    for x in items or []:
+                        if isinstance(x, dict) or isinstance(x, str):
+                            norm.append(x)
+                    return norm
+
+                gathered_documents = _normalize_docs(tool_output.get("relevant_documents", gathered_documents))
+                gathered_images = _normalize_list(tool_output.get("relevant_images", gathered_images))
+                gathered_past_tickets = _normalize_list(tool_output.get("past_tickets", gathered_past_tickets))
+                product_confidence = tool_output.get("confidence", product_confidence)
                 
                 break
                 
@@ -227,7 +347,6 @@ def react_agent_loop(state: TicketState) -> Dict[str, Any]:
             logger.error(f"{STEP_NAME} | ❌ Error in iteration {iteration_num}: {e}", exc_info=True)
             break
     
-    # Calculate final metrics
     total_duration = time.time() - start_time
     final_iteration_count = len(iterations)
     
@@ -237,26 +356,25 @@ def react_agent_loop(state: TicketState) -> Dict[str, Any]:
     logger.info(f"{STEP_NAME} | Iterations: {final_iteration_count}/{MAX_ITERATIONS}")
     logger.info(f"{STEP_NAME} | Status: {status}")
     logger.info(f"{STEP_NAME} | Duration: {total_duration:.2f}s")
-    logger.info(f"{STEP_NAME} | Product identified: {identified_product is not None}")
-    logger.info(f"{STEP_NAME} | Documents: {len(gathered_documents)}, Images: {len(gathered_images)}, Tickets: {len(gathered_past_tickets)}")
+    logger.info(f"{STEP_NAME} | Product: {identified_product is not None}")
+    logger.info(f"{STEP_NAME} | Docs: {len(gathered_documents)}, Images: {len(gathered_images)}, Tickets: {len(gathered_past_tickets)}")
     
-    # Build final reasoning
     if iterations:
         last_thought = iterations[-1]["thought"]
         final_reasoning = f"Completed {final_iteration_count} iterations. {last_thought}"
     else:
         final_reasoning = "No iterations completed"
     
-    # Populate legacy fields for compatibility with existing nodes
+    # Populate legacy fields
     legacy_updates = _populate_legacy_fields(
         gathered_documents=gathered_documents,
         gathered_images=gathered_images,
         gathered_past_tickets=gathered_past_tickets,
         identified_product=identified_product,
-        product_confidence=product_confidence
+        product_confidence=product_confidence,
+        gemini_answer=gemini_answer
     )
     
-    # Build audit event
     audit_events = add_audit_event(
         state,
         event="react_agent_loop",
@@ -282,6 +400,7 @@ def react_agent_loop(state: TicketState) -> Dict[str, Any]:
         "gathered_documents": gathered_documents,
         "gathered_images": gathered_images,
         "gathered_past_tickets": gathered_past_tickets,
-        **legacy_updates,  # Populate legacy RAG result fields
+        "gemini_answer": gemini_answer,
+        **legacy_updates,
         "audit_events": audit_events
     }

@@ -55,6 +55,19 @@ def document_search_tool(
     logger.info(f"[DOCUMENT_SEARCH] Query: '{query}', Product Context: {product_context}")
     
     try:
+        if not query or not str(query).strip():
+            return {
+                "success": False,
+                "documents": [],
+                "gemini_answer": "",
+                "count": 0,
+                "message": "Query text is required for document search"
+            }
+
+        # Keep top_k within sane bounds to avoid overwhelming the API/LLM
+        top_k = max(1, min(int(top_k), 15))
+        clean_query = str(query).strip()
+
         client = get_gemini_client()
         
         # Build context-aware query
@@ -62,13 +75,13 @@ def document_search_tool(
             search_query = f"""
 Product: {product_context}
 
-Customer needs help with: {query}
+Customer needs help with: {clean_query}
 
 Find relevant documentation from product manuals, installation guides, FAQs, or warranty information.
 """
         else:
             search_query = f"""
-Customer needs help with: {query}
+Customer needs help with: {clean_query}
 
 Find relevant documentation from product manuals, installation guides, FAQs, or warranty information.
 """
@@ -87,6 +100,25 @@ Be thorough and cite multiple relevant sources."""
         source_documents = result.get('source_documents', [])
         
         if not source_documents:
+            if gemini_answer:
+                logger.warning("[DOCUMENT_SEARCH] No grounded sources, returning Gemini answer as fallback")
+                return {
+                    "success": True,
+                    "documents": [{
+                        "id": "gemini_answer",
+                        "title": "Gemini Generated Answer",
+                        "content_preview": gemini_answer[:500],
+                        "relevance_score": 0.8,
+                        "source_type": "gemini_generated",
+                        "uri": ""
+                    }],
+                    "gemini_answer": gemini_answer,
+                    "count": 1,
+                    "message": "Returned generated answer (no grounded documents)",
+                    "source_documents": [],
+                    "hits": hits
+                }
+
             return {
                 "success": False,
                 "documents": [],
@@ -97,13 +129,35 @@ Be thorough and cite multiple relevant sources."""
         
         # Format documents for ReACT agent
         documents = []
-        for doc in source_documents[:top_k]:
+        # Try to map hits to titles for richer previews
+        hit_lookup = {}
+        for hit in hits:
+            title = hit.get("metadata", {}).get("title", "")
+            if title:
+                hit_lookup[title.lower()] = hit
+
+        for idx, doc in enumerate(source_documents[:top_k]):
+            title = doc.get("title", "Unknown Document")
+            lower_title = title.lower()
+            mapped_hit = hit_lookup.get(lower_title)
+            # Prefer preview text from hit.content when available
+            content_preview = doc.get("content_preview", "")
+            if mapped_hit and mapped_hit.get("content"):
+                preview_from_hit = str(mapped_hit.get("content", ""))[:500]
+                if preview_from_hit:
+                    content_preview = preview_from_hit
+
+            uri = doc.get("uri") or (mapped_hit.get("metadata", {}).get("uri") if mapped_hit else "")
+            doc_id = doc.get("id") or (mapped_hit.get("id") if mapped_hit else f"doc_{idx}")
+
             documents.append({
-                "title": doc.get("title", "Unknown Document"),
-                "content_preview": doc.get("content_preview", ""),
+                "id": doc_id,
+                "title": title,
+                "content_preview": content_preview,
                 "relevance_score": doc.get("relevance_score", 0),
-                "source_type": _infer_document_type(doc.get("title", "")),
-                "rank": doc.get("rank", 0)
+                "source_type": _infer_document_type(title),
+                "rank": doc.get("rank", 0),
+                "uri": uri
             })
         
         logger.info(f"[DOCUMENT_SEARCH] Found {len(documents)} relevant document(s)")
@@ -113,7 +167,10 @@ Be thorough and cite multiple relevant sources."""
             "documents": documents,
             "gemini_answer": gemini_answer,
             "count": len(documents),
-            "message": f"Found {len(documents)} relevant document(s)"
+            "message": f"Found {len(documents)} relevant document(s)",
+            # Return raw sources/hits for deeper debugging or downstream enrichment
+            "source_documents": source_documents,
+            "hits": hits
         }
         
     except Exception as e:

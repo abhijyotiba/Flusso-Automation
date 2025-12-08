@@ -246,6 +246,7 @@ class GeminiClient:
                     ctx = chunk.retrieved_context
                     title = ctx.title if ctx else None
                     text_content = ctx.text if ctx and hasattr(ctx, 'text') else ""
+                    uri = ctx.uri if ctx and hasattr(ctx, 'uri') else ""
                     
                     # Skip if no title (ctx.title always contains the filename from Gemini)
                     if not title:
@@ -259,7 +260,8 @@ class GeminiClient:
                         'metadata': {
                             'title': title,
                             'source': 'gemini_file_search',
-                            'chunk_index': i
+                            'chunk_index': i,
+                            'uri': uri
                         },
                         'content': text_content or title
                     }
@@ -273,12 +275,18 @@ class GeminiClient:
                             'title': title,
                             'content_preview': (text_content or "")[:500],
                             'relevance_score': 0.95 - (len(source_documents) * 0.05),
-                            'source_type': 'gemini_file_search'
+                            'source_type': 'gemini_file_search',
+                            'uri': uri
                         })
                 
                 logger.info(f"✅ Extracted {len(source_documents)} unique source documents: {seen_titles}")
             else:
                 logger.warning("❌ No grounding metadata - sources not available")
+
+            # Absolute fallback: try lightweight search if nothing retrieved
+            if not hits:
+                logger.info("🔁 Falling back to basic file search for hits")
+                hits = self.search_files(query=query, top_k=top_k)
             
             # Fallback if no grounding but has answer
             if not source_documents and answer_text:
@@ -296,6 +304,19 @@ class GeminiClient:
                     'source_type': 'gemini_generated',
                     'note': 'No document grounding found'
                 })
+
+            # Secondary fallback: if no source_documents but we did retrieve hits, convert them
+            if not source_documents and hits:
+                for i, hit in enumerate(hits[:top_k]):
+                    meta = hit.get('metadata', {})
+                    source_documents.append({
+                        'rank': i + 1,
+                        'title': meta.get('title', f'Document {i+1}'),
+                        'content_preview': str(hit.get('content', ''))[:500],
+                        'relevance_score': hit.get('score', 0.0),
+                        'source_type': meta.get('source', 'gemini_file_search'),
+                        'uri': meta.get('uri', '')
+                    })
             
             return {
                 'hits': hits,

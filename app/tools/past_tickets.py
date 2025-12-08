@@ -1,6 +1,6 @@
 """
-Past Tickets Search Tool - Similar Resolved Tickets
-Finds similar tickets from history to learn from past resolutions
+Past Tickets Search Tool - FIXED VERSION
+Handles both query and product_model parameters
 """
 
 import logging
@@ -15,8 +15,9 @@ logger = logging.getLogger(__name__)
 
 @tool
 def past_tickets_search_tool(
-    query: str,
+    query: Optional[str] = None,
     product_model: Optional[str] = None,
+    product_model_number: Optional[str] = None,  # ADDED: Alternative parameter name
     issue_type: Optional[str] = None,
     top_k: int = 5
 ) -> Dict[str, Any]:
@@ -33,6 +34,7 @@ def past_tickets_search_tool(
         query: Description of the customer's issue (e.g., "shower head leaking", 
                "missing installation parts")
         product_model: Specific product model if known (e.g., "HS6270MB")
+        product_model_number: Alternative parameter name for product model
         issue_type: Type of issue if identifiable (e.g., "leak", "installation", 
                     "missing_parts", "warranty")
         top_k: Number of similar tickets to return (default: 5)
@@ -52,11 +54,28 @@ def past_tickets_search_tool(
                     "outcome": "resolved" | "replaced" | "refunded"
                 }
             ],
-            "common_patterns": [str],  # Recurring issues/solutions
+            "common_patterns": [str],
             "count": int,
             "message": str
         }
     """
+    # CRITICAL FIX: Handle multiple parameter names for product model
+    product_model = product_model or product_model_number
+    
+    # CRITICAL FIX: Require at least one parameter
+    if not query and not product_model:
+        return {
+            "success": False,
+            "tickets": [],
+            "common_patterns": [],
+            "count": 0,
+            "message": "Either 'query' or 'product_model' parameter is required"
+        }
+    
+    # If only product_model provided, build a generic query
+    if not query and product_model:
+        query = f"Issues with product {product_model}"
+    
     logger.info(f"[PAST_TICKETS] Query: '{query}', Product: {product_model}, Issue: {issue_type}")
     
     try:

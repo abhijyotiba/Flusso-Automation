@@ -1,10 +1,10 @@
 """
-ReACT Agent Helper Functions
+ReACT Agent Helper Functions - FIXED VERSION
 Context building, tool execution, legacy field population
 """
 
 import logging
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, List, Tuple, Optional
 
 from app.tools.product_search import product_search_tool
 from app.tools.document_search import document_search_tool
@@ -102,7 +102,8 @@ def _execute_tool(
     action_input: Dict[str, Any],
     ticket_images: List[str],
     attachments: List[Dict],
-    tool_results: Dict[str, Any]
+    tool_results: Dict[str, Any],
+    identified_product: Optional[Dict[str, Any]] = None
 ) -> Tuple[Dict[str, Any], str]:
     """
     Execute the chosen tool and return (output, observation_summary)
@@ -125,6 +126,16 @@ def _execute_tool(
                 return output, f"No products found: {output.get('message')}"
         
         elif action == "document_search_tool":
+            # Make a defensive copy so we never mutate caller input
+            action_input = dict(action_input or {})
+            # If we already know the product but the LLM forgot to add context,
+            # inject it to dramatically improve search quality
+            if identified_product and not action_input.get("product_context"):
+                model = identified_product.get("model")
+                name = identified_product.get("name")
+                if model or name:
+                    action_input["product_context"] = model or name
+
             output = document_search_tool.invoke(action_input)
             tool_results["document_search"] = output
             
@@ -202,52 +213,43 @@ def _execute_tool(
 
 def _populate_legacy_fields(
     gathered_documents: List[Dict],
-    gathered_images: List,  # Can be list of strings or dicts
+    gathered_images: List,
     gathered_past_tickets: List[Dict],
     identified_product: Dict = None,
-    product_confidence: float = 0.0
+    product_confidence: float = 0.0,
+    gemini_answer: str = ""
 ) -> Dict[str, Any]:
     """
-    Populate legacy RAG result fields for compatibility with existing nodes
-    (draft_response, confidence_check, etc. still expect these fields)
+    Populate legacy RAG result fields for compatibility with existing nodes.
+    CRITICAL FIX: Properly formats all fields and builds multimodal_context string.
     """
     
-    # Convert gathered_documents to RetrievalHit format
-    text_retrieval_results = []
-    for i, doc in enumerate(gathered_documents):
-        if isinstance(doc, dict):
-            text_retrieval_results.append({
-                "id": doc.get("id", f"doc_{i}"),
-                "score": doc.get("relevance_score", 0.8),
-                "metadata": {
-                    "title": doc.get("title", "Unknown"),
-                    "source": "gemini_file_search"
-                },
-                "content": doc.get("content_preview", "")
-            })
-        else:
-            text_retrieval_results.append({
-                "id": str(doc),
-                "score": 0.8,
-                "metadata": {"title": str(doc), "source": "react_agent"},
-                "content": ""
-            })
+    # Normalize and validate inputs
+    product_details = identified_product or {}
+    relevant_documents = _normalize_documents(gathered_documents)
+    relevant_images = _normalize_images(gathered_images)
+    past_tickets = _normalize_tickets(gathered_past_tickets)
     
-    # Convert gathered_images to RetrievalHit format
-    # Handle both string URLs and dict formats
+    # Convert to RetrievalHit format for legacy nodes
+    text_retrieval_results = []
+    for i, doc in enumerate(relevant_documents):
+        text_retrieval_results.append({
+            "id": doc.get("id", f"doc_{i}"),
+            "score": doc.get("relevance_score", 0.8),
+            "metadata": {
+                "title": doc.get("title", "Unknown"),
+                "source": "gemini_file_search"
+            },
+            "content": doc.get("content_preview", doc.get("title", ""))
+        })
+    
+    # Convert images to RetrievalHit format
     image_retrieval_results = []
-    for i, img in enumerate(gathered_images):
-        if isinstance(img, str):
-            img_url = img
-        elif isinstance(img, dict):
-            img_url = img.get("url") or img.get("image_url") or img.get("src") or ""
-        else:
-            img_url = str(img)
-        
+    for i, img_url in enumerate(relevant_images):
         if img_url:
             image_retrieval_results.append({
                 "id": f"img_{i}",
-                "score": 0.9,  # Assume high quality since React agent validated
+                "score": 0.9,
                 "metadata": {
                     "image_url": img_url,
                     "source": "react_vision"
@@ -255,48 +257,81 @@ def _populate_legacy_fields(
                 "content": f"Product image {i+1}"
             })
     
-    # Convert gathered_past_tickets to RetrievalHit format
+    # Convert past tickets to RetrievalHit format
     past_ticket_results = []
-    for i, ticket in enumerate(gathered_past_tickets):
-        if isinstance(ticket, dict):
-            similarity = ticket.get("similarity_score", 0)
-            # Handle percentage vs decimal
-            if isinstance(similarity, (int, float)) and similarity > 1:
-                similarity = similarity / 100.0
-            past_ticket_results.append({
-                "id": f"ticket_{ticket.get('ticket_id', i)}",
-                "score": similarity,
-                "metadata": {
-                    "ticket_id": ticket.get("ticket_id"),
-                    "subject": ticket.get("subject"),
-                    "resolution_type": ticket.get("resolution_type"),
-                    "source": "past_tickets"
-                },
-                "content": ticket.get("resolution_summary", "")
-            })
-        else:
-            past_ticket_results.append({
-                "id": str(ticket),
-                "score": 0.5,
-                "metadata": {"ticket_id": str(ticket), "source": "past_tickets"},
-                "content": ""
-            })
+    for i, ticket in enumerate(past_tickets):
+        similarity = ticket.get("similarity_score", 0)
+        if isinstance(similarity, (int, float)) and similarity > 1:
+            similarity = similarity / 100.0
+        
+        past_ticket_results.append({
+            "id": f"ticket_{ticket.get('ticket_id', i)}",
+            "score": similarity,
+            "metadata": {
+                "ticket_id": ticket.get("ticket_id"),
+                "subject": ticket.get("subject"),
+                "resolution_type": ticket.get("resolution_type"),
+                "source": "past_tickets"
+            },
+            "content": ticket.get("resolution_summary", "")
+        })
+    
+    # ========== CRITICAL FIX: Build multimodal_context string ==========
+    # This is what downstream nodes (context_builder, orchestration, draft_response) expect!
+    context_sections = []
+    
+    # Add document context
+    if text_retrieval_results:
+        context_sections.append("### PRODUCT DOCUMENTATION")
+        for i, hit in enumerate(text_retrieval_results[:5], 1):
+            title = hit.get("metadata", {}).get("title", f"Document {i}")
+            content = hit.get("content", "")[:500]
+            score = hit.get("score", 0.0)
+            context_sections.append(f"{i}. **{title}** (score: {score:.2f})\n{content}\n")
+    
+    # Add product/vision context
+    if image_retrieval_results and identified_product:
+        context_sections.append("\n### PRODUCT MATCHES (VISUAL)")
+        model = identified_product.get("model", "Unknown")
+        name = identified_product.get("name", "Product")
+        category = identified_product.get("category", "Unknown")
+        context_sections.append(f"Identified Product: {name} (Model: {model}, Category: {category})")
+        context_sections.append(f"Confidence: {product_confidence:.2%}")
+    
+    # If Gemini produced a grounded answer, surface it for downstream nodes
+    if gemini_answer:
+        context_sections.append("\n### DIRECT GEMINI ANSWER")
+        context_sections.append(str(gemini_answer)[:800])
+
+    # Add past tickets context
+    if past_ticket_results:
+        context_sections.append("\n### SIMILAR PAST TICKETS")
+        for i, hit in enumerate(past_ticket_results[:3], 1):
+            meta = hit.get("metadata", {})
+            ticket_id = meta.get("ticket_id", "Unknown")
+            resolution_type = meta.get("resolution_type", "N/A")
+            content = hit.get("content", "")[:300]
+            score = hit.get("score", 0.0)
+            context_sections.append(
+                f"{i}. Ticket #{ticket_id} ({resolution_type}) - Similarity: {score:.2f}\n{content}\n"
+            )
+    
+    multimodal_context = "\n".join(context_sections) if context_sections else "No relevant context found."
     
     # Build source_documents for citations
     source_documents = []
-    for i, doc in enumerate(gathered_documents[:5]):
-        if isinstance(doc, dict):
-            source_documents.append({
-                "rank": i + 1,
-                "title": doc.get("title", "Unknown"),
-                "content_preview": str(doc.get("content_preview", ""))[:500],
-                "relevance_score": doc.get("relevance_score", 0),
-                "source_type": "gemini_file_search"
-            })
+    for i, doc in enumerate(relevant_documents[:5]):
+        source_documents.append({
+            "rank": i + 1,
+            "title": doc.get("title", "Unknown"),
+            "content_preview": str(doc.get("content_preview", ""))[:500],
+            "relevance_score": doc.get("relevance_score", 0),
+            "source_type": "gemini_file_search"
+        })
     
-    # Build source_products for citations from identified_product
+    # Build source_products for citations
     source_products = []
-    if identified_product and isinstance(identified_product, dict):
+    if identified_product:
         source_products.append({
             "rank": 1,
             "model_no": identified_product.get("model", "Unknown"),
@@ -308,17 +343,16 @@ def _populate_legacy_fields(
     
     # Build source_tickets for citations
     source_tickets = []
-    for i, ticket in enumerate(gathered_past_tickets[:5]):
-        if isinstance(ticket, dict):
-            source_tickets.append({
-                "rank": i + 1,
-                "ticket_id": ticket.get("ticket_id"),
-                "subject": ticket.get("subject"),
-                "resolution_type": ticket.get("resolution_type"),
-                "resolution_summary": str(ticket.get("resolution_summary", ""))[:200],
-                "similarity_score": ticket.get("similarity_score", 0),
-                "source_type": "past_tickets"
-            })
+    for i, ticket in enumerate(past_tickets[:5]):
+        source_tickets.append({
+            "rank": i + 1,
+            "ticket_id": ticket.get("ticket_id"),
+            "subject": ticket.get("subject"),
+            "resolution_type": ticket.get("resolution_type"),
+            "resolution_summary": str(ticket.get("resolution_summary", ""))[:200],
+            "similarity_score": ticket.get("similarity_score", 0),
+            "source_type": "past_tickets"
+        })
     
     # Determine if we have enough information
     has_docs = len(text_retrieval_results) > 0
@@ -326,14 +360,72 @@ def _populate_legacy_fields(
     has_product = identified_product is not None
     enough_info = has_docs or has_images or has_product
     
+    logger.info(f"[LEGACY_FIELDS] Populated: docs={len(text_retrieval_results)}, "
+                f"images={len(image_retrieval_results)}, tickets={len(past_ticket_results)}, "
+                f"context_len={len(multimodal_context)}, enough_info={enough_info}")
+    
     return {
         "text_retrieval_results": text_retrieval_results,
         "image_retrieval_results": image_retrieval_results,
         "past_ticket_results": past_ticket_results,
+        "multimodal_context": multimodal_context,  # CRITICAL: This was missing!
         "source_documents": source_documents,
         "source_products": source_products,
         "source_tickets": source_tickets,
+        "gemini_answer": gemini_answer,
         "enough_information": enough_info,
         "product_match_confidence": product_confidence,
-        "overall_confidence": product_confidence
+        "overall_confidence": product_confidence,
+        # Set ran flags to prevent re-running RAG
+        "ran_vision": True,
+        "ran_text_rag": True,
+        "ran_past_tickets": True
     }
+
+
+def _normalize_documents(docs: List[Any]) -> List[Dict[str, Any]]:
+    """Normalize documents list - handles both strings and dicts."""
+    if not docs:
+        return []
+    
+    normalized = []
+    for doc in docs:
+        if isinstance(doc, dict):
+            normalized.append(doc)
+        elif isinstance(doc, str):
+            normalized.append({"id": doc, "title": doc, "content_preview": ""})
+        else:
+            normalized.append({"id": str(doc), "title": str(doc), "content_preview": ""})
+    return normalized
+
+
+def _normalize_images(images: List[Any]) -> List[str]:
+    """Normalize images list - extracts URLs from dicts or keeps strings."""
+    if not images:
+        return []
+    
+    normalized = []
+    for img in images:
+        if isinstance(img, dict):
+            url = img.get("url") or img.get("image_url") or img.get("src") or ""
+            if url:
+                normalized.append(url)
+        elif isinstance(img, str):
+            normalized.append(img)
+    return normalized
+
+
+def _normalize_tickets(tickets: List[Any]) -> List[Dict[str, Any]]:
+    """Normalize tickets list - handles both strings and dicts."""
+    if not tickets:
+        return []
+    
+    normalized = []
+    for ticket in tickets:
+        if isinstance(ticket, dict):
+            normalized.append(ticket)
+        elif isinstance(ticket, str):
+            normalized.append({"ticket_id": ticket, "subject": "Unknown", "resolution_summary": ""})
+        else:
+            normalized.append({"ticket_id": str(ticket), "subject": "Unknown", "resolution_summary": ""})
+    return normalized
