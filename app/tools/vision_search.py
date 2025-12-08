@@ -133,6 +133,18 @@ def vision_search_tool(
         
         logger.info(f"[VISION_SEARCH] Match quality: {match_quality}, Top score: {top_score:.3f}")
         
+        # Fix: If category mismatch, mark as unsuccessful and don't return bad matches (improvement from improvements.md)
+        if match_quality == "CATEGORY_MISMATCH":
+            logger.warning(f"[VISION_SEARCH] Category mismatch detected - rejecting results")
+            return {
+                "success": False,  # Mark as unsuccessful
+                "matches": [],      # Don't return bad matches
+                "match_quality": "CATEGORY_MISMATCH",
+                "reasoning": reasoning,
+                "count": 0,
+                "message": f"Vision search found products from different category - results excluded"
+            }
+        
         return {
             "success": True,
             "matches": formatted_matches,

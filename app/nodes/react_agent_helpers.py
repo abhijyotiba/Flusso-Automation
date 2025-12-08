@@ -89,10 +89,18 @@ def _build_agent_context(
             if models:
                 context_parts.append(f"✓ Attachment Analysis: Model numbers extracted: {models}")
     
-    # Add urgency if approaching limit
+    # Add urgency if approaching limit - make it VERY prominent
     if iteration_num >= max_iterations - 2:
+        context_parts.append(f"\n\n{'='*60}")
+        context_parts.append(f"🛑 CRITICAL URGENCY ALERT 🛑")
+        context_parts.append(f"{'='*60}")
+        context_parts.append(f"⚠️ Only {max_iterations - iteration_num} iteration(s) remaining!")
+        context_parts.append(f"⚠️ You MUST call finish_tool NOW with whatever information you have!")
+        context_parts.append(f"⚠️ Do NOT attempt any more searches - you're out of time!")
+        context_parts.append(f"{'='*60}\n")
+    elif iteration_num >= max_iterations - 3:
         context_parts.append(f"\n⚠️ WARNING: Only {max_iterations - iteration_num} iterations remaining!")
-        context_parts.append("You MUST call finish_tool in the next 1-2 iterations with whatever you've gathered.")
+        context_parts.append("⚠️ Consider calling finish_tool soon with your current findings.")
     
     return "\n".join(context_parts)
 
@@ -159,7 +167,7 @@ def _execute_tool(
                 quality = output.get("match_quality")
                 count = output.get("count", 0)
                 obs = f"Vision match quality: {quality}. Found {count} match(es). "
-                obs += output.get("reasoning", "")
+                obs += output.get("reaFsoning", "")
                 return output, obs
             else:
                 return output, f"Vision search failed: {output.get('message')}"
@@ -230,6 +238,18 @@ def _populate_legacy_fields(
     relevant_images = _normalize_images(gathered_images)
     past_tickets = _normalize_tickets(gathered_past_tickets)
     
+    # Deduplicate documents by title (case-insensitive) - improvement from improvements.md
+    seen_titles = set()
+    unique_docs = []
+    for doc in relevant_documents:
+        title = doc.get("title", "").lower()
+        if title and title not in seen_titles:
+            seen_titles.add(title)
+            unique_docs.append(doc)
+        elif not title:  # Allow docs without titles
+            unique_docs.append(doc)
+    relevant_documents = unique_docs
+    
     # Convert to RetrievalHit format for legacy nodes
     text_retrieval_results = []
     for i, doc in enumerate(relevant_documents):
@@ -280,10 +300,16 @@ def _populate_legacy_fields(
     # This is what downstream nodes (context_builder, orchestration, draft_response) expect!
     context_sections = []
     
-    # Add document context
+    # Surface Gemini answer prominently FIRST (improvement from improvements.md)
+    if gemini_answer:
+        context_sections.append("### 🎯 DIRECT ANSWER FROM DOCUMENTATION")
+        context_sections.append(str(gemini_answer)[:1000])  # Increased from 800
+        context_sections.append("")  # Blank line for readability
+    
+    # Add document context (increased from top 5 to top 10 - improvement from improvements.md)
     if text_retrieval_results:
         context_sections.append("### PRODUCT DOCUMENTATION")
-        for i, hit in enumerate(text_retrieval_results[:5], 1):
+        for i, hit in enumerate(text_retrieval_results[:10], 1):  # Increased from 5 to 10
             title = hit.get("metadata", {}).get("title", f"Document {i}")
             content = hit.get("content", "")[:500]
             score = hit.get("score", 0.0)
@@ -297,11 +323,6 @@ def _populate_legacy_fields(
         category = identified_product.get("category", "Unknown")
         context_sections.append(f"Identified Product: {name} (Model: {model}, Category: {category})")
         context_sections.append(f"Confidence: {product_confidence:.2%}")
-    
-    # If Gemini produced a grounded answer, surface it for downstream nodes
-    if gemini_answer:
-        context_sections.append("\n### DIRECT GEMINI ANSWER")
-        context_sections.append(str(gemini_answer)[:800])
 
     # Add past tickets context
     if past_ticket_results:
@@ -318,15 +339,16 @@ def _populate_legacy_fields(
     
     multimodal_context = "\n".join(context_sections) if context_sections else "No relevant context found."
     
-    # Build source_documents for citations
+    # Build source_documents for citations (increased from 5 to 10 - improvement from improvements.md)
     source_documents = []
-    for i, doc in enumerate(relevant_documents[:5]):
+    for i, doc in enumerate(relevant_documents[:10]):  # Increased from 5 to 10
         source_documents.append({
             "rank": i + 1,
             "title": doc.get("title", "Unknown"),
             "content_preview": str(doc.get("content_preview", ""))[:500],
             "relevance_score": doc.get("relevance_score", 0),
-            "source_type": "gemini_file_search"
+            "source_type": "gemini_file_search",
+            "uri": doc.get("uri", "")  # Include URI if available
         })
     
     # Build source_products for citations

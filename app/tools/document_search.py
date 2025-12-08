@@ -70,20 +70,41 @@ def document_search_tool(
 
         client = get_gemini_client()
         
-        # Build context-aware query
+        # Build context-aware query with improved formatting for better Gemini results
         if product_context:
             search_query = f"""
+CUSTOMER SUPPORT QUERY:
 Product: {product_context}
+Issue: {clean_query}
 
-Customer needs help with: {clean_query}
+TASK:
+Find the most relevant documentation to help resolve this customer's issue.
 
-Find relevant documentation from product manuals, installation guides, FAQs, or warranty information.
+Priority documents:
+1. Installation guides if asking about setup/mounting/assembly
+2. Troubleshooting guides if reporting problems/defects/leaks
+3. Parts diagrams/lists if asking about missing/replacement parts
+4. Warranty documentation if asking about coverage/claims
+5. Product specifications if asking about dimensions/compatibility/features
+
+Return specific, actionable information with part numbers and step-by-step instructions where applicable.
 """
         else:
             search_query = f"""
-Customer needs help with: {clean_query}
+CUSTOMER SUPPORT QUERY:
+Issue: {clean_query}
 
-Find relevant documentation from product manuals, installation guides, FAQs, or warranty information.
+TASK:
+Find the most relevant documentation to help resolve this customer's issue.
+
+Priority documents:
+1. Installation guides if asking about setup/mounting/assembly
+2. Troubleshooting guides if reporting problems/defects/leaks
+3. Parts diagrams/lists if asking about missing/replacement parts
+4. Warranty documentation if asking about coverage/claims
+5. Product specifications if asking about dimensions/compatibility/features
+
+Return specific, actionable information with part numbers and step-by-step instructions where applicable.
 """
         
         # Execute Gemini File Search with sources

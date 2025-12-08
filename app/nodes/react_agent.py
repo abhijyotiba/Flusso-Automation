@@ -48,8 +48,13 @@ CRITICAL RULES:
 STOPPING CONDITIONS (call finish_tool when ANY is true):
 - ✅ Product identified + found relevant docs/images/tickets
 - ✅ Searched all available sources (attachments, text, images)
-- ✅ Iteration count >= {MAX_ITERATIONS - 2} (URGENT: finish NOW)
+- ✅ Iteration count >= {MAX_ITERATIONS - 2} (🛑 CRITICAL: finish NOW or workflow will timeout!)
 - ✅ Customer query is simple and you have enough basic info
+
+⚠️ URGENCY RULES:
+- If you're at iteration {MAX_ITERATIONS - 2} or higher, STOP IMMEDIATELY and call finish_tool
+- Don't try "one more search" - you're out of time!
+- Use whatever information you've gathered so far
 
 RESPONSE FORMAT (JSON ONLY):
 {{
@@ -73,10 +78,27 @@ OR when finishing:
     }}
 }}
 
+TOOL CHAINING EXAMPLES:
+✅ GOOD: attachment_analyzer → product_search → document_search → finish
+✅ GOOD: vision_search → document_search → past_tickets → finish
+✅ GOOD: product_search → document_search → finish
+❌ BAD: document_search (no product context) → document_search again
+❌ BAD: product_search → product_search → product_search (repeating)
+
+DECISION TREE:
+Has attachments? → START with attachment_analyzer
+  └─ Found model? → product_search → document_search → finish
+  └─ No model found → Try vision_search OR ask for more info
+
+Has images, no attachments? → vision_search → document_search → finish
+
+Text-only query? → document_search → past_tickets → finish
+
 IMPORTANT: 
 - If iteration >= {MAX_ITERATIONS - 2}, you MUST call finish_tool immediately
 - Don't repeat failed searches
-- Be strategic - prioritize high-value tools first"""
+- Be strategic - prioritize high-value tools first
+- Always verify extracted model numbers with product_search_tool before using them"""
 
 
 def react_agent_loop(state: TicketState) -> Dict[str, Any]:
@@ -281,9 +303,21 @@ def react_agent_loop(state: TicketState) -> Dict[str, Any]:
             
             elif action == "document_search_tool" and tool_output.get("success"):
                 docs = tool_output.get("documents", [])
+                # Normalize and deduplicate documents by title
+                seen_titles = {d.get("title", "").lower() for d in gathered_documents if isinstance(d, dict)}
                 for doc in docs:
-                    if doc not in gathered_documents:
+                    # Ensure doc is a dict
+                    if isinstance(doc, str):
+                        doc = {"id": doc, "title": doc, "content_preview": ""}
+                    elif not isinstance(doc, dict):
+                        continue
+                    
+                    # Deduplicate by title (case-insensitive)
+                    doc_title = doc.get("title", "").lower()
+                    if doc_title and doc_title not in seen_titles:
+                        seen_titles.add(doc_title)
                         gathered_documents.append(doc)
+                
                 # Store direct Gemini answer for downstream nodes
                 if tool_output.get("gemini_answer"):
                     gemini_answer = tool_output.get("gemini_answer", "")
@@ -319,26 +353,62 @@ def react_agent_loop(state: TicketState) -> Dict[str, Any]:
                 # Update from finish tool output
                 identified_product = tool_output.get("product_details", identified_product)
 
-                # Normalize resources returned by finish_tool to dicts/strings we expect
+                # Normalize resources returned by finish_tool - ensure dicts, never strings
                 def _normalize_docs(docs):
+                    """Normalize documents to always be dicts, deduplicate by title"""
+                    if not docs:
+                        return []
                     norm = []
-                    for d in docs or []:
-                        if isinstance(d, dict):
+                    seen_titles = set()
+                    for d in docs:
+                        # Convert strings to dicts
+                        if isinstance(d, str):
+                            d = {"id": d, "title": d, "content_preview": "", "relevance_score": 0.5}
+                        elif not isinstance(d, dict):
+                            continue
+                        
+                        # Deduplicate by title (case-insensitive)
+                        title = d.get("title", "").lower()
+                        if title and title not in seen_titles:
+                            seen_titles.add(title)
                             norm.append(d)
-                        elif isinstance(d, str):
-                            norm.append({"id": d, "title": d, "content_preview": ""})
+                        elif not title:  # Allow docs without titles
+                            norm.append(d)
                     return norm
 
                 def _normalize_list(items):
+                    """Normalize list items - keep as-is if valid"""
+                    if not items:
+                        return []
                     norm = []
-                    for x in items or []:
-                        if isinstance(x, dict) or isinstance(x, str):
+                    for x in items:
+                        if isinstance(x, (dict, str)):
                             norm.append(x)
                     return norm
 
-                gathered_documents = _normalize_docs(tool_output.get("relevant_documents", gathered_documents))
-                gathered_images = _normalize_list(tool_output.get("relevant_images", gathered_images))
-                gathered_past_tickets = _normalize_list(tool_output.get("past_tickets", gathered_past_tickets))
+                # Merge finish_tool results with existing gathered data (prefer existing if better)
+                finish_docs = _normalize_docs(tool_output.get("relevant_documents", []))
+                # Merge: add finish docs that aren't already in gathered_documents
+                existing_titles = {d.get("title", "").lower() for d in gathered_documents if isinstance(d, dict)}
+                for doc in finish_docs:
+                    title = doc.get("title", "").lower()
+                    if title and title not in existing_titles:
+                        gathered_documents.append(doc)
+                
+                finish_images = _normalize_list(tool_output.get("relevant_images", []))
+                for img in finish_images:
+                    if img not in gathered_images:
+                        gathered_images.append(img)
+                
+                finish_tickets = _normalize_list(tool_output.get("past_tickets", []))
+                # Deduplicate tickets by ticket_id
+                existing_ticket_ids = {t.get("ticket_id") if isinstance(t, dict) else str(t) for t in gathered_past_tickets}
+                for ticket in finish_tickets:
+                    ticket_id = ticket.get("ticket_id") if isinstance(ticket, dict) else str(ticket)
+                    if ticket_id and ticket_id not in existing_ticket_ids:
+                        gathered_past_tickets.append(ticket)
+                        existing_ticket_ids.add(ticket_id)
+                
                 product_confidence = tool_output.get("confidence", product_confidence)
                 
                 break
