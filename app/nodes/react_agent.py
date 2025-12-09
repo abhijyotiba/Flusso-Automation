@@ -15,7 +15,8 @@ from app.utils.audit import add_audit_event
 from app.nodes.react_agent_helpers import (
     _build_agent_context,
     _execute_tool,
-    _populate_legacy_fields
+    _populate_legacy_fields,
+
 )
 
 logger = logging.getLogger(__name__)
