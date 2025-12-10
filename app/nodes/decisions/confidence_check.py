@@ -27,18 +27,29 @@ def evaluate_product_confidence(state: TicketState) -> Dict[str, Any]:
     Also factors in vision_match_quality:
     - CATEGORY_MISMATCH → force low confidence for image-based tickets
     - NO_MATCH → reduce confidence if ticket has images
+    
+    SMART OVERRIDE: 
+    - If text-based confidence is high (>0.8), vision failures are ignored.
 
     Writes:
       - product_match_confidence: float in [0, 1]
+      - product_match_reasoning: str
     """
     start_time = time.time()
     logger.info(f"{STEP_NAME} | ▶ Evaluating product match confidence...")
+    
+    # Initialize defaults
+    confidence = 0.5
+    original_confidence = 0.5
+    reasoning = "Processing..."
     
     # Start node log
     node_log = log_node_start("confidence_check", {})
 
     ticket_text = state.get("ticket_text", "") or ""
-    context = state.get("multimodal_context", "") or ""
+    # Ensure context is string to prevent type errors
+    raw_context = state.get("multimodal_context", "")
+    context = str(raw_context) if raw_context else ""
     
     # Get vision quality info
     vision_quality = state.get("vision_match_quality", "NO_MATCH")
@@ -65,7 +76,7 @@ VISION ANALYSIS RESULT:
 - Reason: {vision_reason}
 
 IMPORTANT: If vision quality is 'CATEGORY_MISMATCH' or 'NO_MATCH', the visual product identification 
-failed and confidence should be LOW (0.1-0.3) unless text-based matches are very strong.
+failed. However, if the text/document evidence is STRONG, you may still assign high confidence.
 """
 
     user_prompt = f"""Ticket:
@@ -92,39 +103,42 @@ Retrieved Product Information:
         if not isinstance(response, dict):
             logger.warning(f"{STEP_NAME} | ⚠ Non-dict response from LLM, using default 0.5")
             confidence = 0.5
-            reasoning = None
+            reasoning = "LLM returned invalid format. Defaulting to 0.5."
         else:
             confidence = float(response.get("confidence", 0.5))
-            reasoning = response.get("reasoning")
+            reasoning = response.get("reasoning", "No reasoning provided.")
 
         # Clamp to [0, 1]
         confidence = max(0.0, min(1.0, confidence))
-        
-        # === VISION QUALITY OVERRIDE ===
-        # If the ticket had images but vision matching failed, 
-        # cap the confidence since we couldn't identify the product visually
         original_confidence = confidence
         
-        if has_images and vision_quality == "CATEGORY_MISMATCH":
-            # Vision found wrong category - cap confidence at 0.3
-            max_confidence = 0.3
-            if confidence > max_confidence:
-                confidence = max_confidence
-                logger.info(f"{STEP_NAME} | ⚠ Vision CATEGORY_MISMATCH - capping confidence from {original_confidence:.2f} to {confidence:.2f}")
-                
-        elif has_images and vision_quality == "NO_MATCH":
-            # No visual match at all - cap at 0.4
-            max_confidence = 0.4
-            if confidence > max_confidence:
-                confidence = max_confidence
-                logger.info(f"{STEP_NAME} | ⚠ Vision NO_MATCH - capping confidence from {original_confidence:.2f} to {confidence:.2f}")
+        # === VISION QUALITY OVERRIDE (IMPROVED) ===
+        # Logic: If we found the exact manual (High Text Confidence), 
+        # we shouldn't care if the Vision Search failed.
         
-        elif has_images and vision_quality == "LOW":
-            # Low confidence visual match - cap at 0.6
-            max_confidence = 0.6
-            if confidence > max_confidence:
-                confidence = max_confidence
-                logger.info(f"{STEP_NAME} | ⚠ Vision LOW quality - capping confidence from {original_confidence:.2f} to {confidence:.2f}")
+        vision_cap_applied = False
+        max_confidence = 1.0
+        
+        # Threshold for "Strong Text Evidence"
+        has_strong_text_evidence = confidence > 0.8
+
+        if has_images:
+            if not has_strong_text_evidence:
+                # Only apply penalties if we are NOT sure based on text
+                if vision_quality == "CATEGORY_MISMATCH":
+                    max_confidence = 0.3
+                elif vision_quality == "NO_MATCH":
+                    max_confidence = 0.5  # Bumped up from 0.4 to be less aggressive
+                elif vision_quality == "LOW":
+                    max_confidence = 0.7
+                
+                if confidence > max_confidence:
+                    confidence = max_confidence
+                    vision_cap_applied = True
+                    logger.info(f"{STEP_NAME} | ⚠ Vision {vision_quality} & Weak Text - capping confidence from {original_confidence:.2f} to {confidence:.2f}")
+                    reasoning += f" [System Note: Confidence capped at {max_confidence} due to Vision Quality: {vision_quality}]"
+            else:
+                logger.info(f"{STEP_NAME} | 🛡️ Vision {vision_quality} ignored due to strong text evidence (Conf: {confidence:.2f})")
 
         duration = time.time() - start_time
         logger.info(f"{STEP_NAME} | 🎯 Decision: product_match_confidence={confidence:.2f}")
@@ -147,7 +161,7 @@ Retrieved Product Information:
                 "original_confidence": original_confidence,
                 "vision_quality": vision_quality
             },
-            decision={"confidence": confidence, "vision_adjusted": confidence != original_confidence},
+            decision={"confidence": confidence, "vision_adjusted": vision_cap_applied},
             reasoning=str(reasoning) if reasoning else None
         )
 
@@ -160,12 +174,14 @@ Retrieved Product Information:
                 "original_confidence": original_confidence,
                 "vision_quality": vision_quality,
                 "reasoning": reasoning, 
-                "llm_duration_seconds": llm_duration
+                "llm_duration_seconds": llm_duration,
+                "vision_cap_applied": vision_cap_applied
             },
         )["audit_events"]
 
         return {
             "product_match_confidence": confidence,
+            "product_match_reasoning": reasoning, # Important for downstream context
             "audit_events": audit_events,
         }
 
@@ -179,6 +195,7 @@ Retrieved Product Information:
         else:
             fallback_conf = 0.3  # safe, low-confidence default
             
+        fallback_reasoning = f"Error in confidence check: {str(e)}. Using fallback confidence."
         logger.warning(f"{STEP_NAME} | Using fallback confidence={fallback_conf}")
 
         audit_events = add_audit_event(
@@ -190,5 +207,6 @@ Retrieved Product Information:
 
         return {
             "product_match_confidence": fallback_conf,
+            "product_match_reasoning": fallback_reasoning,
             "audit_events": audit_events,
         }

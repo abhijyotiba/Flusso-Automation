@@ -6,7 +6,11 @@ Context building, tool execution, legacy field population
 import logging
 from typing import Dict, Any, List, Tuple, Optional
 
+# =============================================================================
+# 👇 CRITICAL CHANGE: IMPORT FROM YOUR NEW CSV TOOL WRAPPER
+# =============================================================================
 from app.tools.product_search_from_csv import product_search_tool
+
 from app.tools.document_search import document_search_tool
 from app.tools.vision_search import vision_search_tool
 from app.tools.past_tickets import past_tickets_search_tool
@@ -68,6 +72,8 @@ def _build_agent_context(
             if prod.get("products"):
                 top = prod["products"][0]
                 context_parts.append(f"  Top match: {top.get('model_no')} - {top.get('product_title')}")
+                if prod.get("source") == "catalog_cache":
+                    context_parts.append(f"  (Source: Verified Catalog Match)")
     
     if tool_results["document_search"]:
         docs = tool_results["document_search"]
@@ -138,12 +144,6 @@ def _execute_tool(
 ) -> Tuple[Dict[str, Any], str]:
     """
     Execute the chosen tool with proper parameter handling.
-    
-    CRITICAL FIXES:
-    1. Proper LangChain tool invocation using .run()
-    2. Correct parameter wrapping in tool_input
-    3. Attachment passing with proper field names
-    4. Model number auto-detection for product search
     """
     
     try:
@@ -176,9 +176,7 @@ def _execute_tool(
         # -----------------------------------------------------------
         if action == "attachment_analyzer_tool":
             logger.info(f"[TOOL_EXEC] Executing attachment_analyzer_tool")
-            logger.info(f"[TOOL_EXEC] Available attachments: {len(attachments)}")
             
-            # CRITICAL FIX: Ensure attachments parameter is set
             if not action_input:
                 action_input = {}
             
@@ -188,8 +186,6 @@ def _execute_tool(
             # Set focus if not provided
             if "focus" not in action_input:
                 action_input["focus"] = "model_numbers"
-            
-            logger.info(f"[TOOL_EXEC] Calling with {len(attachments)} attachments")
             
             output = _run_langchain_tool(attachment_analyzer_tool, action_input)
             tool_results["attachment_analysis"] = output
@@ -209,7 +205,7 @@ def _execute_tool(
                 return output, f"Attachment analysis failed: {output.get('message')}"
         
         # -----------------------------------------------------------
-        # 2. PRODUCT SEARCH TOOL
+        # 2. PRODUCT SEARCH TOOL (Uses new CSV wrapper)
         # -----------------------------------------------------------
         elif action == "product_search_tool":
             logger.info(f"[TOOL_EXEC] Executing product_search_tool")
@@ -224,16 +220,22 @@ def _execute_tool(
                 action_input["model_number"] = query
                 action_input.pop("query", None)  # Remove query param
             
+            # This calls the wrapper in 'product_search_from_csv.py'
             output = _run_langchain_tool(product_search_tool, action_input)
             tool_results["product_search"] = output
             
             if output.get("success"):
                 count = output.get("count", 0)
-                obs = f"Found {count} product(s). "
+                source = output.get("source", "unknown")
+                obs = f"Found {count} product(s) via {source}. "
+                
+                # Add specific observation if it was a group number match
+                if "appears to be a group/base number" in output.get("message", ""):
+                    obs += f"[NOTE: Group Number Detected] "
+
                 if output.get("products"):
                     top = output["products"][0]
                     obs += f"Top match: {top.get('model_no')} - {top.get('product_title')} "
-                    obs += f"(similarity: {top.get('similarity_score')}%)"
                 return output, obs
             else:
                 return output, f"No products found: {output.get('message')}"
@@ -274,8 +276,6 @@ def _execute_tool(
             logger.info(f"[TOOL_EXEC] Executing vision_search_tool")
             
             action_input = dict(action_input or {})
-            
-            # Always use ticket images
             action_input["image_urls"] = ticket_images
             
             logger.info(f"[TOOL_EXEC] Searching {len(ticket_images)} image(s)")
@@ -376,7 +376,6 @@ def _execute_tool(
         # -----------------------------------------------------------
         elif action == "finish_tool":
             logger.info(f"[TOOL_EXEC] Executing finish_tool")
-            
             output = _run_langchain_tool(finish_tool, action_input or {})
             obs = f"Finished. {output.get('summary', '')}"
             return output, obs
@@ -405,7 +404,6 @@ def _populate_legacy_fields(
 ) -> Dict[str, Any]:
     """
     Populate legacy RAG result fields for compatibility with existing nodes.
-    CRITICAL FIX: Properly formats all fields and builds multimodal_context string.
     """
     
     # Normalize and validate inputs
@@ -414,7 +412,7 @@ def _populate_legacy_fields(
     relevant_images = _normalize_images(gathered_images)
     past_tickets = _normalize_tickets(gathered_past_tickets)
     
-    # Deduplicate documents by title (case-insensitive) - improvement from improvements.md
+    # Deduplicate documents by title
     seen_titles = set()
     unique_docs = []
     for doc in relevant_documents:
@@ -472,26 +470,22 @@ def _populate_legacy_fields(
             "content": ticket.get("resolution_summary", "")
         })
     
-    # ========== CRITICAL FIX: Build multimodal_context string ==========
-    # This is what downstream nodes (context_builder, orchestration, draft_response) expect!
+    # Build multimodal_context string
     context_sections = []
     
-    # Surface Gemini answer prominently FIRST (improvement from improvements.md)
     if gemini_answer:
         context_sections.append("### 🎯 DIRECT ANSWER FROM DOCUMENTATION")
-        context_sections.append(str(gemini_answer)[:1000])  # Increased from 800
-        context_sections.append("")  # Blank line for readability
+        context_sections.append(str(gemini_answer)[:1000])
+        context_sections.append("")
     
-    # Add document context (increased from top 5 to top 10 - improvement from improvements.md)
     if text_retrieval_results:
         context_sections.append("### PRODUCT DOCUMENTATION")
-        for i, hit in enumerate(text_retrieval_results[:10], 1):  # Increased from 5 to 10
+        for i, hit in enumerate(text_retrieval_results[:10], 1):
             title = hit.get("metadata", {}).get("title", f"Document {i}")
             content = hit.get("content", "")[:500]
             score = hit.get("score", 0.0)
             context_sections.append(f"{i}. **{title}** (score: {score:.2f})\n{content}\n")
     
-    # Add product/vision context
     if image_retrieval_results and identified_product:
         context_sections.append("\n### PRODUCT MATCHES (VISUAL)")
         model = identified_product.get("model", "Unknown")
@@ -500,7 +494,6 @@ def _populate_legacy_fields(
         context_sections.append(f"Identified Product: {name} (Model: {model}, Category: {category})")
         context_sections.append(f"Confidence: {product_confidence:.2%}")
 
-    # Add past tickets context
     if past_ticket_results:
         context_sections.append("\n### SIMILAR PAST TICKETS")
         for i, hit in enumerate(past_ticket_results[:3], 1):
@@ -518,19 +511,18 @@ def _populate_legacy_fields(
         logger.warning("Multimodal context is empty or too short!")
         multimodal_context = "No context gathered. Agent did not retrieve sufficient information."
     
-    # Build source_documents for citations (increased from 5 to 10 - improvement from improvements.md)
+    # Build source fields
     source_documents = []
-    for i, doc in enumerate(relevant_documents[:10]):  # Increased from 5 to 10
+    for i, doc in enumerate(relevant_documents[:10]):
         source_documents.append({
             "rank": i + 1,
             "title": doc.get("title", "Unknown"),
             "content_preview": str(doc.get("content_preview", ""))[:500],
             "relevance_score": doc.get("relevance_score", 0),
             "source_type": "gemini_file_search",
-            "uri": doc.get("uri", "")  # Include URI if available
+            "uri": doc.get("uri", "")
         })
     
-    # Build source_products for citations
     source_products = []
     if identified_product:
         source_products.append({
@@ -542,7 +534,6 @@ def _populate_legacy_fields(
             "source_type": "react_agent"
         })
     
-    # Build source_tickets for citations
     source_tickets = []
     for i, ticket in enumerate(past_tickets[:5]):
         source_tickets.append({
@@ -555,7 +546,6 @@ def _populate_legacy_fields(
             "source_type": "past_tickets"
         })
     
-    # Determine if we have enough information
     has_docs = len(text_retrieval_results) > 0
     has_images = len(image_retrieval_results) > 0
     has_product = identified_product is not None
@@ -569,7 +559,7 @@ def _populate_legacy_fields(
         "text_retrieval_results": text_retrieval_results,
         "image_retrieval_results": image_retrieval_results,
         "past_ticket_results": past_ticket_results,
-        "multimodal_context": multimodal_context,  # CRITICAL: This was missing!
+        "multimodal_context": multimodal_context,
         "source_documents": source_documents,
         "source_products": source_products,
         "source_tickets": source_tickets,
@@ -577,7 +567,6 @@ def _populate_legacy_fields(
         "enough_information": enough_info,
         "product_match_confidence": product_confidence,
         "overall_confidence": product_confidence,
-        # Set ran flags to prevent re-running RAG
         "ran_vision": True,
         "ran_text_rag": True,
         "ran_past_tickets": True
@@ -585,10 +574,7 @@ def _populate_legacy_fields(
 
 
 def _normalize_documents(docs: List[Any]) -> List[Dict[str, Any]]:
-    """Normalize documents list - handles both strings and dicts."""
-    if not docs:
-        return []
-    
+    if not docs: return []
     normalized = []
     for doc in docs:
         if isinstance(doc, dict):
@@ -601,10 +587,7 @@ def _normalize_documents(docs: List[Any]) -> List[Dict[str, Any]]:
 
 
 def _normalize_images(images: List[Any]) -> List[str]:
-    """Normalize images list - extracts URLs from dicts or keeps strings."""
-    if not images:
-        return []
-    
+    if not images: return []
     normalized = []
     for img in images:
         if isinstance(img, dict):
@@ -617,10 +600,7 @@ def _normalize_images(images: List[Any]) -> List[str]:
 
 
 def _normalize_tickets(tickets: List[Any]) -> List[Dict[str, Any]]:
-    """Normalize tickets list - handles both strings and dicts."""
-    if not tickets:
-        return []
-    
+    if not tickets: return []
     normalized = []
     for ticket in tickets:
         if isinstance(ticket, dict):

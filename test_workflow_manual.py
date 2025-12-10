@@ -15,6 +15,9 @@ import argparse
 import logging
 from datetime import datetime
 
+# Import the cache initializer
+from app.services.product_catalog_cache import init_product_cache
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -94,6 +97,24 @@ def print_gathered_resources(state: dict):
 async def run_workflow_on_ticket(ticket_id: int, mode: str = "react"):
     """Run the full workflow on a specific ticket."""
     
+    print(f"""
+    ╔═══════════════════════════════════════════════════════════╗
+    ║       🌊 FLUSSO MANUAL WORKFLOW TEST                      ║
+    ╠═══════════════════════════════════════════════════════════╣
+    ║   Ticket ID: {str(ticket_id):<44}║
+    ║   Mode:      {mode.upper():<44}║
+    ║   Started:   {datetime.now().strftime('%Y-%m-%d %H:%M:%S'):<44}║
+    ╚═══════════════════════════════════════════════════════════╝
+    """)
+
+    # 1. Initialize Product Cache (CRITICAL FOR CSV SEARCH)
+    print("\n🚀 Initializing Service Cache...")
+    try:
+        init_product_cache()
+        print("   ✅ Product Catalog Cache Initialized")
+    except Exception as e:
+        print(f"   ⚠️ Cache initialization warning: {e}")
+
     # Import based on mode
     if mode == "react":
         from app.graph.graph_builder_react import build_react_graph as build_graph
@@ -103,16 +124,6 @@ async def run_workflow_on_ticket(ticket_id: int, mode: str = "react"):
         mode_label = "Sequential"
     
     from app.graph.state import TicketState
-    
-    print(f"""
-    ╔═══════════════════════════════════════════════════════════╗
-    ║       🌊 FLUSSO MANUAL WORKFLOW TEST                      ║
-    ╠═══════════════════════════════════════════════════════════╣
-    ║   Ticket ID: {ticket_id:<44}║
-    ║   Mode:      {mode_label:<44}║
-    ║   Started:   {datetime.now().strftime('%Y-%m-%d %H:%M:%S'):<44}║
-    ╚═══════════════════════════════════════════════════════════╝
-    """)
     
     try:
         # Build the workflow graph

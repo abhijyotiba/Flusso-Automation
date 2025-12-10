@@ -10,7 +10,8 @@ logger = logging.getLogger(__name__)
 # CONFIG
 # ===============================
 # Replace with your actual Google Sheet CSV link
-GOOGLE_SHEET_CSV_URL = "YOUR_SHEET_EXPORT_LINK_HERE"
+GOOGLE_SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/1e9ppexIafl8B3qd-QOKYt0V5kQMqDJ8kyjRjUONxUYs/export?format=csv"
+
 
 REFRESH_INTERVAL_SECONDS = 43200  # 12 Hours
 

@@ -65,14 +65,18 @@ def product_search_tool(
     # ==========================================
     logger.info(f"[PRODUCT_LOOKUP] Falling back to Pinecone...")
     try:
-        # Pass inputs to the backup tool
         pinecone_input = {}
         if query: pinecone_input["query"] = query
         if model_number: pinecone_input["model_number"] = model_number
         if category: pinecone_input["category"] = category
         
-        # Use .run() to execute the LangChain tool
-        return pinecone_search.run(tool_input=pinecone_input)
+        result = pinecone_search.run(tool_input=pinecone_input)
+        
+        # FIX: Inject the source key if it's missing for better logging
+        if isinstance(result, dict) and "source" not in result:
+            result["source"] = "pinecone_fallback"
+            
+        return result
     except Exception as e:
         logger.error(f"[PRODUCT_LOOKUP] Pinecone fallback error: {e}")
         return {"success": False, "message": "Search failed in both systems."}
