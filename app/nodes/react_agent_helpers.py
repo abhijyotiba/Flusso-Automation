@@ -6,7 +6,7 @@ Context building, tool execution, legacy field population
 import logging
 from typing import Dict, Any, List, Tuple, Optional
 
-from app.tools.product_search import product_search_tool
+from app.tools.product_search_from_csv import product_search_tool
 from app.tools.document_search import document_search_tool
 from app.tools.vision_search import vision_search_tool
 from app.tools.past_tickets import past_tickets_search_tool

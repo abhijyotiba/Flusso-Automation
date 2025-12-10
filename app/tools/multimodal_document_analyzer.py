@@ -1,6 +1,6 @@
 """
 Multimodal Document Analyzer Tool - FIXED
-Uses Gemini Pro Vision to extract structured data from PDFs and documents
+Uses Gemini to extract structured data from PDFs and documents via File API
 """
 
 import logging
@@ -12,6 +12,10 @@ from typing import Dict, Any, List
 from langchain.tools import tool
 from google import genai
 from google.genai import types
+from requests.auth import HTTPBasicAuth
+
+# Import settings globally
+from app.config.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -19,10 +23,7 @@ logger = logging.getLogger(__name__)
 def _download_attachment(url: str, name: str) -> str:
     """Download attachment to temp file and return path"""
     try:
-        # Get auth from environment
-        from app.config.settings import settings
-        from requests.auth import HTTPBasicAuth
-        
+        # Use Freshdesk API key from settings
         auth = HTTPBasicAuth(settings.freshdesk_api_key, "X")
         
         logger.info(f"[DOC_ANALYZER] Downloading: {name}")
@@ -30,6 +31,7 @@ def _download_attachment(url: str, name: str) -> str:
         response.raise_for_status()
         
         # Create temp file with proper extension
+        # Default to .pdf if no extension found
         suffix = "." + name.split(".")[-1] if "." in name else ".pdf"
         fd, path = tempfile.mkstemp(suffix=suffix)
         os.close(fd)
@@ -51,7 +53,7 @@ def multimodal_document_analyzer_tool(
     focus: str = "model_numbers"
 ) -> Dict[str, Any]:
     """
-    Analyze documents using Gemini Pro Vision to extract structured information.
+    Analyze documents using Gemini Vision to extract structured information.
     
     Focuses on extracting:
     - Product model numbers (e.g., "100.1170", "HS6270MB")
@@ -66,24 +68,7 @@ def multimodal_document_analyzer_tool(
         focus: What to extract - "model_numbers", "order_info", or "general"
     
     Returns:
-        {
-            "success": bool,
-            "documents": [
-                {
-                    "filename": str,
-                    "extracted_info": {
-                        "model_numbers": [str],
-                        "part_numbers": [str],
-                        "order_numbers": [str],
-                        "product_names": [str],
-                        "quantities": dict,
-                        "dates": dict,
-                        "key_entities": [str]
-                    }
-                }
-            ],
-            "count": int
-        }
+        Dict containing extracted information and document counts.
     """
     logger.info(f"[DOC_ANALYZER] Processing {len(attachments)} attachment(s)")
     
@@ -96,8 +81,10 @@ def multimodal_document_analyzer_tool(
         }
     
     try:
-        # Initialize Gemini client
-        from app.config.settings import settings
+        # Initialize Gemini client using settings
+        if not settings.gemini_api_key:
+             return {"success": False, "message": "Missing GEMINI_API_KEY"}
+             
         client = genai.Client(api_key=settings.gemini_api_key)
         
         documents = []
@@ -112,15 +99,15 @@ def multimodal_document_analyzer_tool(
                 continue
             
             try:
-                # Download to temp file
+                # 1. Download to temp file
                 local_path = _download_attachment(url, name)
                 temp_files.append(local_path)
                 
-                # Upload to Gemini
+                # 2. Upload to Gemini Files API
                 logger.info(f"[DOC_ANALYZER] Uploading {name} to Gemini")
-                file_obj = client.files.upload(file_path=local_path)
+                file_obj = client.files.upload(file=local_path)
                 
-                # Build extraction prompt based on focus
+                # 3. Build extraction prompt
                 if focus == "model_numbers":
                     extraction_prompt = """Extract ALL product model numbers and part numbers from this document.
 
@@ -167,16 +154,24 @@ Return JSON with:
 - dates: dict with relevant dates
 - key_entities: list of other important information"""
                 
-                # Call Gemini Pro for extraction
-                logger.info(f"[DOC_ANALYZER] Analyzing {name} with Gemini Pro")
+                # 4. Call Gemini for extraction
+                logger.info(f"[DOC_ANALYZER] Analyzing {name} with model: {settings.llm_model}")
+                
+                # Use strict structure to avoid Pydantic validation errors
                 response = client.models.generate_content(
-                    model="gemini-1.5-pro",  # Pro for better extraction
+                    model=settings.llm_model,  # Use configured model (e.g., gemini-2.5-flash)
                     contents=[
-                        {"parts": [{"text": extraction_prompt}]},
-                        {"parts": [{"file_data": {
-                            "file_uri": file_obj.uri,
-                            "mime_type": file_obj.mime_type
-                        }}]}
+                        types.Content(
+                            parts=[
+                                types.Part(text=extraction_prompt),
+                                types.Part(
+                                    file_data=types.FileData(
+                                        file_uri=file_obj.uri,
+                                        mime_type=file_obj.mime_type
+                                    )
+                                )
+                            ]
+                        )
                     ],
                     config=types.GenerateContentConfig(
                         response_mime_type="application/json",
@@ -184,25 +179,24 @@ Return JSON with:
                     )
                 )
                 
-                # Parse JSON response
-                extracted_text = response.text if hasattr(response, 'text') else ""
+                # 5. Parse JSON response
+                extracted_text = response.text if response.text else ""
                 
                 if extracted_text:
                     try:
                         extracted_info = json.loads(extracted_text)
                     except json.JSONDecodeError as e:
                         logger.error(f"[DOC_ANALYZER] JSON parse error for {name}: {e}")
-                        logger.error(f"[DOC_ANALYZER] Raw response: {extracted_text}")
                         extracted_info = {"error": "Failed to parse JSON", "raw": extracted_text}
                 else:
-                    extracted_info = {"error": "No response from Gemini"}
+                    extracted_info = {"error": "No response text from Gemini"}
                 
                 documents.append({
                     "filename": name,
                     "extracted_info": extracted_info
                 })
                 
-                logger.info(f"[DOC_ANALYZER] ✓ Analyzed {name}: {json.dumps(extracted_info, indent=2)[:200]}")
+                logger.info(f"[DOC_ANALYZER] ✓ Analyzed {name}")
                 
             except Exception as e:
                 logger.error(f"[DOC_ANALYZER] Failed to process {name}: {e}", exc_info=True)
@@ -211,10 +205,11 @@ Return JSON with:
                     "extracted_info": {"error": str(e)}
                 })
         
-        # Cleanup temp files
+        # 6. Cleanup temp files
         for temp_file in temp_files:
             try:
-                os.remove(temp_file)
+                if os.path.exists(temp_file):
+                    os.remove(temp_file)
             except Exception as e:
                 logger.warning(f"[DOC_ANALYZER] Failed to delete temp file {temp_file}: {e}")
         

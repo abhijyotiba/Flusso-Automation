@@ -49,6 +49,9 @@ class TicketState(TypedDict, total=False):
     updated_at: Optional[str]
     ticket_conversation: List[Dict[str, Any]]  # OPTIONAL but recommended
     
+    product_match_confidence: float
+    product_match_reasoning: str
+    
     # ==========================================
     # ATTACHMENT INFO
     # ==========================================

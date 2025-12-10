@@ -11,6 +11,7 @@ from typing import Dict, Any, List
 from app.graph.state import TicketState, ReACTIteration
 from app.clients.llm_client import get_llm_client
 from app.utils.audit import add_audit_event
+from app.config.settings import settings
 
 from app.nodes.react_agent_helpers import (
     _build_agent_context,
@@ -130,15 +131,16 @@ IF TEXT-ONLY QUERY:
   - Use finish_tool when you've gathered sufficient information
   - Extract model numbers from attachments FIRST if available
   - Verify all model numbers with product_search_tool
+  - If product_search_tool returns low confidence or no match, ASSUME the model number is valid and proceed to document_search_tool.
   - Pass product context to document_search for better results
   - Check iteration count - are you running out of time?
 
 ❌ DON'T:
   - Repeat the same search twice (system will block it)
+  - Get stuck trying to "verify" a product that isn't in the database.
   - Call tools without proper parameters
   - Ignore the urgency warnings about iteration count
   - Forget to call finish_tool (workflow won't complete!)
-  - Use wrong tool names (must match exactly)
 
 🛑 ITERATION LIMIT: {MAX_ITERATIONS} iterations
   - At iteration {MAX_ITERATIONS - 2}: You have ~2 iterations left, start finishing!
@@ -211,7 +213,7 @@ WORKFLOW C - Text-only support request:
 
 - If a tool returns empty results, try a different search term
 - If you extract a model number, ALWAYS verify with product_search_tool
-- If product_search fails, try document_search with product description
+- If you have a Model Number but Product Search failed, pass that Model Number to document_search_tool as the "query"
 - If you're unsure, check past_tickets for similar situations
 - If iteration count is high, prioritize finish_tool over more searches
 
@@ -319,7 +321,7 @@ def react_agent_loop(state: TicketState) -> Dict[str, Any]:
                 user_prompt=agent_context,
                 response_format="json",
                 temperature=0.2,  # Lower temperature for more consistent decisions
-                max_tokens=2048
+                max_tokens=settings.llm_max_tokens
             )
             
             if not isinstance(response, dict):
