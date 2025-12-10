@@ -32,7 +32,7 @@ def vision_search_tool(
     Args:
         image_urls: List of image URLs from ticket attachments
         expected_category: Expected product category from context 
-                          (e.g., "Shower Heads", "Faucets")
+                        (e.g., "Shower Heads", "Faucets")
         top_k: Number of similar products to return (default: 5)
     
     Returns:

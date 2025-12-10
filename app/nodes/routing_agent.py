@@ -166,7 +166,7 @@ def classify_ticket_category(state: TicketState) -> Dict[str, Any]:
     text = state.get("ticket_text", "") or ""
     tags = state.get("tags", [])
     ticket_type = state.get("ticket_type")
-    attachments = state.get("attachment_summary", []) or []
+    attachments = state.get("ticket_attachments", []) or []
     
     logger.info(f"{STEP_NAME} | Input: subject={len(subject)} chars, text={len(text)} chars, tags={tags}")
 

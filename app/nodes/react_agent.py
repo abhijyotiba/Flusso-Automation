@@ -113,7 +113,7 @@ def react_agent_loop(state: TicketState) -> Dict[str, Any]:
     ticket_subject = state.get("ticket_subject", "")
     ticket_text = state.get("ticket_text", "")
     ticket_images = state.get("ticket_images", [])
-    attachments = state.get("attachment_summary", [])
+    attachments = state.get("ticket_attachments", [])
     
     logger.info(f"{STEP_NAME} | Ticket #{ticket_id}: {len(ticket_text)} chars, {len(ticket_images)} images, {len(attachments)} attachments")
     

@@ -1,7 +1,6 @@
 """
-Fetch Ticket Node
-Clean + Correct Production Version
-Now with comprehensive attachment processing (PDFs, DOCX, XLSX, TXT)
+Fetch Ticket Node - FIXED VERSION
+Now properly stores BOTH attachment metadata AND full attachment objects
 """
 
 import logging
@@ -18,17 +17,12 @@ from app.utils.detailed_logger import (
 )
 
 logger = logging.getLogger(__name__)
-
-# Step counter for workflow tracing
 STEP_NAME = "1️⃣ FETCH_TICKET"
 
 
 def fetch_ticket_from_freshdesk(state: TicketState) -> Dict[str, Any]:
     start_time = time.time()
     
-    # -------------------------------------------------
-    # Validate ticket_id
-    # -------------------------------------------------
     raw_id = state.get("ticket_id")
     if not raw_id:
         raise ValueError("ticket_id is required")
@@ -42,33 +36,21 @@ def fetch_ticket_from_freshdesk(state: TicketState) -> Dict[str, Any]:
     logger.info(f"{STEP_NAME} | Starting for ticket #{ticket_id}")
     logger.info(f"{'='*60}")
     
-    # Start detailed workflow log
     workflow_log = start_workflow_log(str(ticket_id))
     node_log = log_node_start("fetch_ticket", {"ticket_id": ticket_id})
 
     try:
         client = get_freshdesk_client()
-
-        # Fetch ticket with company + stats (requester auto-included)
-        ticket = client.get_ticket(
-            ticket_id,
-            params={"include": "company,stats"}
-        )
-
+        ticket = client.get_ticket(ticket_id, params={"include": "company,stats"})
         data = client.extract_ticket_data(ticket)
 
-        # -------------------------------------------------
-        # CHECK IF ALREADY PROCESSED BY AI
-        # Skip tickets that already have AI processing tags
-        # -------------------------------------------------
+        # Check if already processed
         existing_tags = data.get("tags", [])
         ai_processed_tags = ["AI_PROCESSED", "AI_UNRESOLVED", "LOW_CONFIDENCE_MATCH", "VIP_RULE_FAILURE"]
         
         already_processed = any(tag in existing_tags for tag in ai_processed_tags)
         if already_processed:
             logger.warning(f"{STEP_NAME} | ⚠️ Ticket #{ticket_id} already has AI tags: {existing_tags}")
-            logger.warning(f"{STEP_NAME} | Marking for skip to prevent duplicate processing")
-            # Return minimal state with skip flag
             return {
                 "ticket_subject": data.get("subject", ""),
                 "ticket_text": data.get("description", ""),
@@ -78,44 +60,34 @@ def fetch_ticket_from_freshdesk(state: TicketState) -> Dict[str, Any]:
                 "tags": existing_tags,
                 "has_text": False,
                 "has_image": False,
-                "ran_vision": True,  # Mark as done to skip RAG
+                "ran_vision": True,
                 "ran_text_rag": True,
                 "ran_past_tickets": True,
                 "should_skip": True,
                 "skip_reason": f"Already processed (has tag: {[t for t in existing_tags if t in ai_processed_tags]})",
-                "skip_private_note": "",  # No note needed, already processed
                 "ticket_category": "already_processed",
                 "audit_events": add_audit_event(
                     state,
                     event="fetch_ticket",
                     event_type="SKIP",
-                    details={
-                        "ticket_id": ticket_id,
-                        "reason": "Already has AI processing tags",
-                        "existing_tags": existing_tags
-                    }
+                    details={"ticket_id": ticket_id, "reason": "Already has AI processing tags", "existing_tags": existing_tags}
                 )["audit_events"],
             }
 
-        # -------------------------------------------------
-        # Extract text description
-        # -------------------------------------------------
         description = data.get("description", "")
         has_text = bool(description.strip())
 
-        # -------------------------------------------------
-        # Process ALL attachments (PDFs, DOCX, XLSX, TXT + Images)
-        # -------------------------------------------------
-        attachments = data.get("attachments", [])
-        logger.info(f"{STEP_NAME} | 📎 Found {len(attachments)} attachment(s)")
+        # ============================================================
+        # CRITICAL FIX: Store BOTH processed content AND raw attachments
+        # ============================================================
+        raw_attachments = data.get("attachments", [])
+        logger.info(f"{STEP_NAME} | 📎 Found {len(raw_attachments)} attachment(s)")
         
-        attachment_result = process_all_attachments(attachments)
+        # Process attachments for text extraction
+        attachment_result = process_all_attachments(raw_attachments)
         
-        # Images for vision pipeline
         images = attachment_result["images"]
         has_image = len(images) > 0
-        
-        # Extracted text from documents (PDFs, DOCX, etc.)
         attachment_text = attachment_result["extracted_content"]
         attachment_summary = attachment_result["attachment_summary"]
         attachment_stats = attachment_result["stats"]
@@ -127,39 +99,47 @@ def fetch_ticket_from_freshdesk(state: TicketState) -> Dict[str, Any]:
         else:
             combined_text = description
 
-        # -------------------------------------------------
-        # Build state update
-        # -------------------------------------------------
+        # ============================================================
+        # NEW: Store full attachment objects for tools
+        # Filter to keep only document attachments (not images)
+        # ============================================================
+        document_attachments = []
+        for att in raw_attachments:
+            content_type = str(att.get("content_type", "")).lower()
+            if not content_type.startswith("image/"):
+                # Keep full attachment object with URL
+                document_attachments.append({
+                    "name": att.get("name", "unknown"),
+                    "attachment_url": att.get("attachment_url"),
+                    "content_type": content_type,
+                    "size": att.get("size", 0)
+                })
+        
+        logger.info(f"{STEP_NAME} | 📎 Prepared {len(document_attachments)} document attachment(s) for tools")
+
         updates = {
             "ticket_subject": data.get("subject", ""),
-            "ticket_text": combined_text,  # Now includes attachment content!
+            "ticket_text": combined_text,
             "ticket_images": images,
             
-            # Store attachment metadata
-            "attachment_summary": attachment_summary,
-
+            # Store BOTH for different purposes:
+            "attachment_summary": attachment_summary,  # Metadata for display
+            "ticket_attachments": document_attachments,  # Full objects for tools ✅ NEW
+            
             "requester_email": data.get("requester_email", ""),
             "requester_name": data.get("requester_name", "Unknown"),
-
             "ticket_type": data.get("type"),
             "priority": data.get("priority"),
             "tags": data.get("tags", []),
-
             "created_at": data.get("created_at"),
             "updated_at": data.get("updated_at"),
-
             "has_text": has_text or bool(attachment_text),
             "has_image": has_image,
-
-            # Required for RAG loop
             "ran_vision": False,
             "ran_text_rag": False,
             "ran_past_tickets": False,
         }
 
-        # -------------------------------------------------
-        # Audit
-        # -------------------------------------------------
         updates["audit_events"] = add_audit_event(
             state,
             event="fetch_ticket",
@@ -170,6 +150,7 @@ def fetch_ticket_from_freshdesk(state: TicketState) -> Dict[str, Any]:
                 "has_image": has_image,
                 "image_count": len(images),
                 "attachment_stats": attachment_stats,
+                "document_attachments": len(document_attachments),  # ✅ NEW
                 "tags": updates["tags"],
             }
         )["audit_events"]
@@ -177,19 +158,15 @@ def fetch_ticket_from_freshdesk(state: TicketState) -> Dict[str, Any]:
         duration = time.time() - start_time
         logger.info(f"{STEP_NAME} | ✅ Completed in {duration:.2f}s")
         logger.info(f"{STEP_NAME} | Subject: {updates['ticket_subject'][:80]}...")
-        logger.info(f"{STEP_NAME} | Text length: {len(description)} chars | Has images: {has_image} ({len(images)} files)")
-        # Log with PII masking for privacy compliance
+        logger.info(f"{STEP_NAME} | Text: {len(description)} chars | Images: {has_image} ({len(images)} files) | Docs: {len(document_attachments)}")
         logger.info(f"{STEP_NAME} | Requester: {mask_name(updates['requester_name'])} <{mask_email(updates['requester_email'])}>")
-        logger.info(f"{STEP_NAME} | Tags: {updates['tags']}")
         
-        # Update workflow log with ticket info
         if workflow_log:
             workflow_log.ticket_subject = updates['ticket_subject']
             workflow_log.ticket_text = combined_text
             workflow_log.ticket_images = images
-            workflow_log.attachment_count = len(attachments)
+            workflow_log.attachment_count = len(raw_attachments)
         
-        # Complete node log
         log_node_complete(
             node_log,
             output_summary={
@@ -197,6 +174,7 @@ def fetch_ticket_from_freshdesk(state: TicketState) -> Dict[str, Any]:
                 "text_length": len(combined_text),
                 "has_images": has_image,
                 "image_count": len(images),
+                "document_count": len(document_attachments),
                 "attachment_stats": attachment_stats,
                 "tags": updates['tags']
             }
@@ -208,11 +186,11 @@ def fetch_ticket_from_freshdesk(state: TicketState) -> Dict[str, Any]:
         duration = time.time() - start_time
         logger.error(f"{STEP_NAME} | ❌ FAILED after {duration:.2f}s: {e}", exc_info=True)
 
-        # Safe fallback
         return {
             "ticket_subject": "Error fetching ticket",
             "ticket_text": str(e),
             "ticket_images": [],
+            "ticket_attachments": [],  # ✅ NEW - empty list on error
             "requester_email": "",
             "requester_name": "Unknown",
             "tags": [],

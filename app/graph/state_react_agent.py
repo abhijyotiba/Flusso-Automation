@@ -51,6 +51,7 @@ class TicketState(TypedDict, total=False):
     # ATTACHMENT INFO
     # ==========================================
     attachment_summary: List[Dict[str, Any]]
+    ticket_attachments: List[Dict[str, Any]]
     
     # ==========================================
     # REACT AGENT FIELDS (NEW)

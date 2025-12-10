@@ -154,6 +154,22 @@ def _execute_tool(
             # If caller already prepared "tool_input", pass through
             return tool.run(**kwargs)
 
+        # ------------------------------------------------------
+        # AUTO-DETECT MODEL NUMBERS FOR PRODUCT SEARCH
+        # ------------------------------------------------------
+        def _looks_like_model_number(text: Any) -> bool:
+            import re
+            return isinstance(text, str) and bool(re.match(r"^[A-Za-z0-9\-\.]{4,25}$", text))
+
+        if action == "product_search_tool":
+            # Make sure action_input is a dict we can safely mutate
+            action_input = dict(action_input or {})
+            # If LLM used `query` instead of `model_number`, and it looks like a model number → fix it
+            if "model_number" not in action_input:
+                q = action_input.get("query")
+                if _looks_like_model_number(q):
+                    action_input["model_number"] = q
+                    action_input.pop("query", None)
 
         # Map action to tool function
         if action == "product_search_tool":
