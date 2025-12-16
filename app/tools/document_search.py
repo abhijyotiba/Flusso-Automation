@@ -21,19 +21,25 @@ def document_search_tool(
     """
     Search product documentation using Gemini File Search.
     
-    Use this tool when you need:
-    - Installation instructions
-    - Product specifications
-    - Troubleshooting guides
-    - Warranty information
-    - Maintenance procedures
-    - Parts lists
-    - Technical diagrams
+    🔍 WHAT THIS TOOL CONTAINS:
+    ✅ Product specifications and technical details
+    ✅ Installation guides and manuals
+    ✅ Parts lists with part numbers 
+    ✅ Technical diagrams and schematics
+    
+    ❌ WHAT THIS TOOL DOES NOT CONTAIN:
+    ❌ Customer order information
+    ❌ Purchase orders or invoices
+    ❌ Shipping/tracking information
+    ❌ Customer account details
+    
+    ⚠️ CRITICAL: Do NOT use order numbers to search this tool.
+    Order numbers are NOT product identifiers and will not yield relevant results.
     
     Args:
         query: What information you're looking for (e.g., "installation instructions", 
-               "leak repair", "warranty period")
-        product_context: Product model/name to provide context (e.g., "HS6270MB shower head")
+               "leak repair", "warranty period", "part number for diverter")
+        product_context: Product model/name to provide context (e.g., "HS6270MB shower head" or "260.2693T")
         top_k: Number of documents to retrieve (default: 5)
     
     Returns:
@@ -70,34 +76,49 @@ def document_search_tool(
 
         client = get_gemini_client()
         
+        # Determine the search strategy based on context
+        search_type = _determine_search_type(clean_query)
+        
         # Build context-aware query with improved formatting for better Gemini results
         if product_context:
+            # Extract model number from product context if available
+            model_number = _extract_model_number(product_context)
+            
+            # Build product-specific search query
             search_query = f"""
-CUSTOMER SUPPORT QUERY:
-Product: {product_context}
-Issue: {clean_query}
+PRODUCT-SPECIFIC DOCUMENTATION SEARCH:
 
-TASK:
-Find the most relevant documentation to help resolve this customer's issue.
+Target Product: {product_context}
+{f"Model Number: {model_number}" if model_number else ""}
+Customer Issue: {clean_query}
 
-Priority documents:
-1. Installation guides if asking about setup/mounting/assembly
-2. Troubleshooting guides if reporting problems/defects/leaks
-3. Parts diagrams/lists if asking about missing/replacement parts
-4. Warranty documentation if asking about coverage/claims
-5. Product specifications if asking about dimensions/compatibility/features
+CRITICAL INSTRUCTIONS:
+1. PRIORITIZE documents that specifically mention the product model "{model_number or product_context}"
+2. Search for product manuals, specifications, installation guides, and troubleshooting docs for THIS SPECIFIC PRODUCT
+3. DO NOT return general policy documents unless directly relevant to the specific issue
+4. Focus on finding technical documentation, user manuals, parts lists for the identified product
 
-Return specific, actionable information with part numbers and step-by-step instructions where applicable.
+DOCUMENT PRIORITY ORDER:
+1. Product manual or datasheet for {model_number or product_context}
+2. Technical specifications for this product model
+3. Installation/assembly guide for this specific product
+4. Troubleshooting guide for product-specific issues
+5. Parts diagram or replacement parts list
+6. Warranty/returns policy ONLY if customer is asking about warranty/replacement
+
+Return specific, actionable information with part numbers, dimensions, and step-by-step instructions where applicable.
+Cite the exact document source for each piece of information.
 """
         else:
             search_query = f"""
-CUSTOMER SUPPORT QUERY:
-Issue: {clean_query}
+CUSTOMER SUPPORT DOCUMENTATION SEARCH:
+
+Customer Issue: {clean_query}
 
 TASK:
 Find the most relevant documentation to help resolve this customer's issue.
 
-Priority documents:
+DOCUMENT PRIORITY ORDER:
 1. Installation guides if asking about setup/mounting/assembly
 2. Troubleshooting guides if reporting problems/defects/leaks
 3. Parts diagrams/lists if asking about missing/replacement parts
@@ -107,13 +128,30 @@ Priority documents:
 Return specific, actionable information with part numbers and step-by-step instructions where applicable.
 """
         
+        # Build context-aware system instruction
+        if product_context:
+            model_number = _extract_model_number(product_context)
+            system_instruction = f"""You are a product documentation search assistant specializing in finding product-specific technical documentation.
+
+CRITICAL: Prioritize finding documentation that specifically mentions or relates to the product model "{model_number or product_context}".
+
+Your job is to:
+1. Find product manuals, datasheets, and specifications for the specific product model
+2. Locate installation guides, troubleshooting docs, and parts lists for this product
+3. Only include general policy documents if the customer is specifically asking about warranty/returns
+4. AVOID returning generic policy documents when product-specific documentation is needed
+
+Be thorough and cite the exact document source for each piece of information."""
+        else:
+            system_instruction = """You are a product documentation search assistant.
+Your job is to find the most relevant documentation to help answer the customer's question.
+Be thorough and cite multiple relevant sources."""
+        
         # Execute Gemini File Search with sources
         result = client.search_files_with_sources(
             query=search_query,
             top_k=top_k,
-            system_instruction="""You are a product documentation search assistant.
-Your job is to find the most relevant documentation to help answer the customer's question.
-Be thorough and cite multiple relevant sources."""
+            system_instruction=system_instruction
         )
         
         hits = result.get('hits', [])
@@ -223,3 +261,65 @@ def _infer_document_type(title: str) -> str:
         return "specifications"
     else:
         return "general_documentation"
+
+
+def _extract_model_number(product_context: str) -> Optional[str]:
+    """
+    Extract model number from product context.
+    Model numbers typically follow patterns like: 100.1050SB, ABC-123, PROD-456-XL
+    """
+    import re
+    
+    if not product_context:
+        return None
+    
+    # Common model number patterns:
+    # 1. Alphanumeric with dots: 100.1050SB
+    # 2. Letters-numbers: ABC123, PROD456
+    # 3. Hyphenated: ABC-123-XL
+    patterns = [
+        r'\b(\d{3}\.\d{4}[A-Z]{1,3})\b',  # Pattern: 100.1050SB
+        r'\b([A-Z]{2,5}-\d{3,5}(?:-[A-Z]{1,3})?)\b',  # Pattern: PROD-123-XL
+        r'\b([A-Z]{2,4}\d{3,6}[A-Z]{0,3})\b',  # Pattern: ABC123, PROD456XL
+        r'\b(\d{2,3}-\d{3,4}[A-Z]{0,3})\b',  # Pattern: 10-1234AB
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, product_context, re.IGNORECASE)
+        if match:
+            return match.group(1).upper()
+    
+    # Fallback: look for any word that looks like a model number (mix of letters and numbers)
+    words = product_context.split()
+    for word in words:
+        # Has both letters and numbers, reasonable length
+        if (any(c.isdigit() for c in word) and 
+            any(c.isalpha() for c in word) and 
+            4 <= len(word) <= 15):
+            return word.upper()
+    
+    return None
+
+
+def _determine_search_type(query: str) -> str:
+    """
+    Determine the type of search based on query content.
+    This helps in prioritizing different document types.
+    """
+    query_lower = query.lower()
+    
+    # Issue type detection
+    if any(kw in query_lower for kw in ["replace", "replacement", "new one", "send another"]):
+        return "replacement_request"
+    elif any(kw in query_lower for kw in ["install", "setup", "assemble", "mount"]):
+        return "installation"
+    elif any(kw in query_lower for kw in ["broken", "damage", "defect", "leak", "not working"]):
+        return "troubleshooting"
+    elif any(kw in query_lower for kw in ["warranty", "guarantee", "coverage"]):
+        return "warranty"
+    elif any(kw in query_lower for kw in ["missing", "parts", "component"]):
+        return "parts_inquiry"
+    elif any(kw in query_lower for kw in ["dimension", "size", "compatible", "fit"]):
+        return "specifications"
+    else:
+        return "general"

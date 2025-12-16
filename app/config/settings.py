@@ -86,6 +86,15 @@ class Settings(BaseSettings):
     vision_category_validation: bool = True  # Enable LLM category validation
     
     # ==========================================
+    # PLANNING MODULE SETTINGS (Phase 1)
+    # ==========================================
+    enable_planner: bool = True  # Enable/disable planning module
+    policy_doc_url: Optional[str] = None  # Google Docs URL for policy document
+    policy_refresh_interval_hours: int = 6  # How often to refresh policy cache
+    planner_max_steps: int = 8  # Maximum steps in execution plan
+    planner_llm_temperature: float = 0.1  # Low temp for consistent planning
+    
+    # ==========================================
     # VERTEX AI SETTINGS (production multimodal embeddings)
     # Set USE_VERTEX_AI_EMBEDDINGS=true to use Vertex AI instead of CLIP
     # ==========================================

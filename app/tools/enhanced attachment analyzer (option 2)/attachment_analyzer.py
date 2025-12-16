@@ -70,10 +70,26 @@ class EnhancedAttachmentProcessor:
         return self._fitz
     
     def _download_attachment(self, url: str) -> Tuple[Optional[bytes], Optional[str]]:
-        """Download attachment with Freshdesk authentication"""
+        """
+        Download attachment with proper authentication handling.
+        
+        S3 signed URLs (amazonaws.com) should NOT use auth - they have AWS signature.
+        Direct Freshdesk API URLs need Basic Auth.
+        """
         try:
-            auth = HTTPBasicAuth(settings.freshdesk_api_key, "X")
-            response = requests.get(url, auth=auth, timeout=30, stream=True)
+            # Detect S3 signed URLs
+            is_s3_signed_url = (
+                "amazonaws.com" in url.lower() or 
+                "X-Amz-Signature" in url or
+                "x-amz-signature" in url.lower()
+            )
+            
+            if is_s3_signed_url:
+                response = requests.get(url, timeout=30, stream=True)
+            else:
+                auth = HTTPBasicAuth(settings.freshdesk_api_key, "X")
+                response = requests.get(url, auth=auth, timeout=30, stream=True)
+            
             response.raise_for_status()
             return response.content, None
         except Exception as e:

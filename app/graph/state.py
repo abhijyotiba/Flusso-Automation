@@ -48,6 +48,28 @@ class TicketState(TypedDict, total=False):
     created_at: Optional[str]
     updated_at: Optional[str]
     ticket_conversation: List[Dict[str, Any]]  # OPTIONAL but recommended
+    ticket_attachments: List[Dict[str, Any]]  # Original attachment metadata
+    
+    # ==========================================
+    # PLANNING MODULE (Phase 1 Enhancement)
+    # ==========================================
+    execution_plan: Optional[Dict[str, Any]]      # Full plan from planner
+    plan_steps: List[Dict[str, Any]]              # Ordered steps to execute
+    current_plan_step: int                         # Current step index (0-based)
+    ticket_complexity: Optional[str]               # "simple" | "moderate" | "complex"
+    planning_confidence: float                     # Planner's confidence (0.0-1.0)
+    
+    # Policy context
+    applicable_policy_type: Optional[str]          # "warranty" | "return" | "missing_parts" | etc.
+    policy_requirements: List[str]                 # What policy requires (e.g., "proof of purchase")
+    policy_context: Optional[str]                  # Full policy section text
+    can_proceed_per_policy: bool                   # Whether we have what policy needs
+    missing_for_policy: List[str]                  # What's missing per policy
+    
+    # Analysis results from planner
+    customer_need_analysis: Optional[str]          # What the customer wants
+    help_type: Optional[str]                       # warranty|return|parts|installation|etc.
+    mentioned_product_model: Optional[str]         # Model number if found in ticket
     
     product_match_confidence: float
     product_match_reasoning: str
@@ -139,6 +161,14 @@ class TicketState(TypedDict, total=False):
     vision_expected_category: Optional[str]  # What the customer is asking about (e.g., "Shower Hinges")
 
     # ==========================================
+    # EVIDENCE RESOLUTION (conflict handling)
+    # ==========================================
+    evidence_analysis: Optional[Dict[str, Any]]  # Full analysis from evidence resolver
+    needs_more_info: bool                         # True if conflicting evidence needs customer clarification
+    info_request_response: Optional[str]          # Customer-facing message asking for more info
+    evidence_decision: Optional[str]              # "ACCEPT_OCR", "ACCEPT_VISION", "REQUIRES_INFO", etc.
+
+    # ==========================================
     # PRODUCT / DECISION METRICS
     # ==========================================
     detected_product_id: Optional[str]   # OPTIONAL but recommended
@@ -162,6 +192,14 @@ class TicketState(TypedDict, total=False):
     resolution_status: Optional[str]
     extra_tags: List[str]
 
+    # ==========================================
+    # WORKFLOW ERROR TRACKING
+    # ==========================================
+    workflow_error: Optional[str]              # Error message if workflow failed
+    workflow_error_type: Optional[str]         # "api_error" | "timeout" | "rate_limit" | "internal"
+    workflow_error_node: Optional[str]         # Which node failed
+    is_system_error: bool                       # True = system failure, False = legitimate need-more-info
+    
     # ==========================================
     # AUDIT TRAIL
     # ==========================================

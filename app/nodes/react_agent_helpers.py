@@ -3,13 +3,15 @@ ReACT Agent Helper Functions - FIXED VERSION
 Context building, tool execution, legacy field population
 """
 
+import json
 import logging
 from typing import Dict, Any, List, Tuple, Optional
 
 # =============================================================================
-# 👇 CRITICAL CHANGE: IMPORT FROM YOUR NEW CSV TOOL WRAPPER
+# TOOL IMPORTS
 # =============================================================================
-from app.tools.product_search_from_csv import product_search_tool
+# NEW: Import from the comprehensive product catalog tool
+from app.tools.product_catalog_tool import product_catalog_tool, get_product_variations
 
 from app.tools.document_search import document_search_tool
 from app.tools.vision_search import vision_search_tool
@@ -60,7 +62,10 @@ def _build_agent_context(
             context_parts.append(f"\nIteration {it['iteration']}:")
             context_parts.append(f"  Thought: {it['thought'][:150]}")
             context_parts.append(f"  Action: {it['action']}")
-            context_parts.append(f"  Result: {it['observation'][:200]}")
+            # ⚠️ CRITICAL: Show MORE of the observation - model numbers were being truncated!
+            # Increase from 200 to 1000 chars to ensure identifiers are preserved
+            obs_preview = it['observation'][:1000]
+            context_parts.append(f"  Result: {obs_preview}")
     
     # Show accumulated results
     context_parts.append(f"\n\n═══ CURRENT STATE ═══")
@@ -108,15 +113,72 @@ def _build_agent_context(
             mda = tool_results["multimodal_doc_analysis"]
             if mda.get("success"):
                 context_parts.append(f"✓ Multimodal Doc Analysis: {mda.get('count', 0)} document(s) processed")
+                
+                # ⚠️ CRITICAL: Extract and prominently show ALL identifiers!
+                all_ids = mda.get("all_identifiers", {})
+                if all_ids:
+                    model_nums = all_ids.get("model_numbers", [])
+                    part_nums = all_ids.get("part_numbers", [])
+                    order_nums = all_ids.get("order_numbers", [])
+                    
+                    if model_nums:
+                        context_parts.append(f"  🔴 MODEL NUMBERS EXTRACTED: {', '.join(model_nums)}")
+                        context_parts.append(f"     ➡️ Use these in product_catalog_tool!")
+                    if part_nums:
+                        context_parts.append(f"  🟠 PART NUMBERS EXTRACTED: {', '.join(part_nums)}")
+                    if order_nums:
+                        context_parts.append(f"  🟡 ORDER NUMBERS EXTRACTED: {', '.join(order_nums)}")
+                
+                # Also show per-document info
                 for doc in mda.get("documents", [])[:2]:
-                    context_parts.append(f"  {doc.get('filename')}: {list(doc.get('extracted_info', {}).keys())}")
+                    doc_ids = doc.get("identifiers", {})
+                    doc_models = doc_ids.get("model_numbers", [])
+                    filename = doc.get('filename', 'unknown')
+                    if doc_models:
+                        context_parts.append(f"  📄 {filename}: models={doc_models}")
 
         if tool_results.get("ocr_image_analysis"):
             ocr = tool_results["ocr_image_analysis"]
             if ocr.get("success"):
                 context_parts.append(f"✓ OCR Image Analysis: {len(ocr.get('results', []))} image(s) processed")
-                for res in ocr.get("results", [])[:2]:
-                    context_parts.append(f"  {res.get('image_url')}: {res.get('text', '')[:60]}...")
+                
+                # ⚠️ CRITICAL: Extract and prominently show ALL identifiers!
+                all_ids = ocr.get("all_identifiers", {})
+                if all_ids:
+                    model_nums = all_ids.get("model_numbers", [])
+                    part_nums = all_ids.get("part_numbers", [])
+                    order_nums = all_ids.get("order_numbers", [])
+                    
+                    if model_nums:
+                        context_parts.append(f"  🔴 MODEL NUMBERS EXTRACTED: {', '.join(model_nums)}")
+                        context_parts.append(f"     ➡️ Use these in product_catalog_tool!")
+                    if part_nums:
+                        context_parts.append(f"  🟠 PART NUMBERS EXTRACTED: {', '.join(part_nums)}")
+                    if order_nums:
+                        context_parts.append(f"  🟡 ORDER NUMBERS EXTRACTED: {', '.join(order_nums)}")
+                        context_parts.append(f"     (Order numbers are NOT model numbers)")
+                
+                # Show the full combined text (or first 800 chars) so agent can see model numbers
+                combined_text = ocr.get("combined_text", "")
+                if combined_text and combined_text.strip():
+                    text_preview = combined_text[:800] if len(combined_text) > 800 else combined_text
+                    context_parts.append(f"  📄 Extracted Text:\n{text_preview}")
+                    
+                    # Highlight any potential model numbers found (backup regex detection)
+                    import re
+                    model_patterns = [
+                        r'\b(\d{2,3}\.\d{3,4}[A-Z]{0,3})\b',
+                        r'\b([A-Z]{2,5}-?\d{3,6}[A-Z]{0,3})\b',
+                    ]
+                    found_models = []
+                    for pattern in model_patterns:
+                        matches = re.findall(pattern, combined_text, re.IGNORECASE)
+                        found_models.extend(matches)
+                    if found_models:
+                        unique_models = list(set(found_models))[:5]
+                        context_parts.append(f"  🔍 POTENTIAL MODEL NUMBERS: {', '.join(unique_models)}")
+                else:
+                    context_parts.append(f"  [No readable text extracted]")
     
     # Add urgency if approaching limit - make it VERY prominent
     if iteration_num >= max_iterations - 2:
@@ -205,10 +267,10 @@ def _execute_tool(
                 return output, f"Attachment analysis failed: {output.get('message')}"
         
         # -----------------------------------------------------------
-        # 2. PRODUCT SEARCH TOOL (Uses new CSV wrapper)
+        # 2. PRODUCT CATALOG TOOL (Comprehensive Product Search)
         # -----------------------------------------------------------
-        elif action == "product_search_tool":
-            logger.info(f"[TOOL_EXEC] Executing product_search_tool")
+        elif action == "product_catalog_tool" or action == "product_search_tool":
+            logger.info(f"[TOOL_EXEC] Executing product_catalog_tool")
             
             # Make action_input mutable
             action_input = dict(action_input or {})
@@ -220,25 +282,111 @@ def _execute_tool(
                 action_input["model_number"] = query
                 action_input.pop("query", None)  # Remove query param
             
-            # This calls the wrapper in 'product_search_from_csv.py'
-            output = _run_langchain_tool(product_search_tool, action_input)
+            # Call the new comprehensive product catalog tool
+            output = _run_langchain_tool(product_catalog_tool, action_input)
             tool_results["product_search"] = output
             
             if output.get("success"):
                 count = output.get("count", 0)
-                source = output.get("source", "unknown")
-                obs = f"Found {count} product(s) via {source}. "
+                method = output.get("search_method", "unknown")
+                products = output.get("products", [])
+                variations = output.get("variations", {})
                 
-                # Add specific observation if it was a group number match
-                if "appears to be a group/base number" in output.get("message", ""):
-                    obs += f"[NOTE: Group Number Detected] "
-
-                if output.get("products"):
-                    top = output["products"][0]
-                    obs += f"Top match: {top.get('model_no')} - {top.get('product_title')} "
+                # Build rich observation
+                obs = f"✅ Product search successful ({method} match).\n\n"
+                
+                if products:
+                    top = products[0]
+                    obs += f"📦 PRODUCT: {top.get('model_no')}\n"
+                    obs += f"   Title: {top.get('title')}\n"
+                    obs += f"   Category: {top.get('category')} > {top.get('sub_category')}\n"
+                    obs += f"   Collection: {top.get('collection')}\n"
+                    obs += f"   Finish: {top.get('finish_name')} ({top.get('finish_code')})\n"
+                    
+                    # Pricing
+                    price = top.get('list_price', 0)
+                    if price:
+                        obs += f"   Price: ${price:,.2f}\n"
+                    
+                    # Specifications
+                    dims = top.get('dimensions', {})
+                    if dims and any(dims.values()):
+                        obs += f"   Dimensions: {dims.get('height')}\"H x {dims.get('length')}\"L x {dims.get('width')}\"W\n"
+                    
+                    flow = top.get('flow_rate_gpm', 0)
+                    if flow:
+                        obs += f"   Flow Rate: {flow} GPM\n"
+                    
+                    # Available resources
+                    resources = []
+                    if top.get('spec_sheet_url'):
+                        resources.append("Spec Sheet")
+                    if top.get('install_manual_url'):
+                        resources.append("Install Manual")
+                    if top.get('parts_diagram_url'):
+                        resources.append("Parts Diagram")
+                    if top.get('install_video_url'):
+                        resources.append("Install Video")
+                    if resources:
+                        obs += f"   Resources: ✓ {', '.join(resources)}\n"
+                    
+                    # Features
+                    features = top.get('features', [])
+                    if features:
+                        obs += f"   Features:\n"
+                        for feat in features[:4]:
+                            obs += f"     • {feat}\n"
+                    
+                    # Warranty
+                    warranty = top.get('warranty')
+                    if warranty:
+                        obs += f"   Warranty: {warranty[:80]}...\n" if len(warranty) > 80 else f"   Warranty: {warranty}\n"
+                
+                # Show finish variations if available
+                if variations and len(variations) > 1:
+                    obs += f"\n🎨 AVAILABLE FINISHES ({len(variations)}):\n"
+                    finish_list = [f"{code} ({name})" for code, name in variations.items()]
+                    obs += f"   {', '.join(finish_list)}\n"
+                
+                # Group search note
+                if method == "group" and count > 1:
+                    obs += f"\n📋 NOTE: Found {count} finish variations for this product group.\n"
+                
+                # Fuzzy match suggestions
+                suggestions = output.get("suggestions", [])
+                if suggestions and method == "fuzzy":
+                    obs += f"\n🔍 DID YOU MEAN:\n"
+                    for sug in suggestions[:3]:
+                        obs += f"   • {sug['model_no']} ({sug['similarity']}% match) - {sug['title']}\n"
+                
+                # Related spare parts
+                related = output.get("related_parts", [])
+                if related:
+                    obs += f"\n🔧 RELATED SPARE PARTS:\n"
+                    for part in related[:3]:
+                        obs += f"   • {part['model_no']} - {part['title']}\n"
+                
+                logger.info(f"[TOOL_EXEC] Product search: {count} result(s) via {method}")
                 return output, obs
             else:
-                return output, f"No products found: {output.get('message')}"
+                return output, f"❌ No products found: {output.get('message')}"
+        
+        # -----------------------------------------------------------
+        # 2b. GET PRODUCT VARIATIONS (helper tool)
+        # -----------------------------------------------------------
+        elif action == "get_product_variations":
+            logger.info(f"[TOOL_EXEC] Executing get_product_variations")
+            
+            output = _run_langchain_tool(get_product_variations, action_input)
+            
+            if output.get("success"):
+                variations = output.get("variations", {})
+                obs = f"Found {len(variations)} finish variation(s) for {output.get('group_number')}:\n"
+                for code, info in variations.items():
+                    obs += f"  • {info['model_no']} - {info['finish_name']} (${info['price']:,.2f})\n"
+                return output, obs
+            else:
+                return output, f"No variations found: {output.get('message')}"
         
         # -----------------------------------------------------------
         # 3. DOCUMENT SEARCH TOOL
@@ -255,6 +403,7 @@ def _execute_tool(
                 if model or name:
                     action_input["product_context"] = model or name
                     logger.info(f"[TOOL_EXEC] Added product context: {action_input['product_context']}")
+            
             
             output = _run_langchain_tool(document_search_tool, action_input)
             tool_results["document_search"] = output
@@ -331,10 +480,10 @@ def _execute_tool(
                 return output, f"Attachment type classification failed: {output.get('message')}"
         
         # -----------------------------------------------------------
-        # 7. MULTIMODAL DOCUMENT ANALYZER TOOL
+        # 7. MULTIMODAL DOCUMENT ANALYZER TOOL (Intelligent Document Analyzer)
         # -----------------------------------------------------------
         elif action == "multimodal_document_analyzer_tool":
-            logger.info(f"[TOOL_EXEC] Executing multimodal_document_analyzer_tool")
+            logger.info(f"[TOOL_EXEC] Executing multimodal_document_analyzer_tool (Intelligent Document Analyzer)")
             
             action_input = dict(action_input or {})
             action_input["attachments"] = attachments
@@ -343,16 +492,150 @@ def _execute_tool(
             tool_results["multimodal_doc_analysis"] = output
             
             if output.get("success"):
-                obs = f"Multimodal document analysis complete: {output.get('count', 0)} document(s) processed"
+                docs = output.get("documents", [])
+                doc_types = output.get("document_types", {})
+                all_ids = output.get("all_identifiers", {})
+                
+                logger.info(f"[TOOL_EXEC] 📄 Document analyzer processed {len(docs)} document(s)")
+                logger.info(f"[TOOL_EXEC] 📄 Document types: {doc_types}")
+                
+                # =====================================================
+                # VERBOSE OUTPUT - Print full analysis to terminal
+                # =====================================================
+                print("\n" + "=" * 80)
+                print("📄 MULTIMODAL DOCUMENT ANALYZER - FULL OUTPUT")
+                print("=" * 80)
+                
+                for doc in docs:
+                    filename = doc.get("filename", "unknown")
+                    status = doc.get("status", "unknown")
+                    doc_type = doc.get("document_type", "unknown")
+                    conf = doc.get("confidence", 0)
+                    
+                    print(f"\n📄 DOCUMENT: {filename}")
+                    print(f"   Status: {status}")
+                    print(f"   Type: {doc_type} ({conf:.0%} confidence)")
+                    print(f"   Description: {doc.get('description', 'N/A')}")
+                    
+                    # Print extracted data
+                    extracted = doc.get("extracted_data", {})
+                    if extracted:
+                        print(f"\n   📋 EXTRACTED DATA:")
+                        print(json.dumps(extracted, indent=6))
+                    
+                    # Print identifiers
+                    identifiers = doc.get("identifiers", {})
+                    if identifiers:
+                        print(f"\n   🔑 IDENTIFIERS:")
+                        for id_type, values in identifiers.items():
+                            if values and isinstance(values, list) and len(values) > 0:
+                                print(f"      {id_type}: {values}")
+                    
+                    # Print visible text (truncated)
+                    visible_text = doc.get("visible_text", "")
+                    if visible_text:
+                        print(f"\n   📝 VISIBLE TEXT (first 2000 chars):")
+                        print("-" * 60)
+                        print(visible_text[:2000])
+                        if len(visible_text) > 2000:
+                            print(f"... [{len(visible_text) - 2000} more chars]")
+                        print("-" * 60)
+                
+                # Print all identifiers summary
+                if all_ids:
+                    print(f"\n🔍 ALL IDENTIFIERS (combined):")
+                    for id_type, values in all_ids.items():
+                        if values and isinstance(values, list) and len(values) > 0:
+                            print(f"   {id_type}: {values}")
+                
+                print("=" * 80 + "\n")
+                # =====================================================
+                
+                # =====================================================
+                # BUILD OBSERVATION - PUT IDENTIFIERS AT THE TOP!
+                # This is critical: the agent truncates observations,
+                # so model numbers MUST be at the very beginning.
+                # =====================================================
+                
+                obs = f"Document analysis complete: {len(docs)} document(s) processed.\n\n"
+                
+                # ⚠️ CRITICAL: Put extracted identifiers FIRST so agent sees them!
+                if all_ids:
+                    has_model_numbers = all_ids.get("model_numbers", [])
+                    has_order_numbers = all_ids.get("order_numbers", [])
+                    has_part_numbers = all_ids.get("part_numbers", [])
+                    
+                    if has_model_numbers or has_order_numbers or has_part_numbers:
+                        obs += "=" * 50 + "\n"
+                        obs += "⚠️ CRITICAL - EXTRACTED IDENTIFIERS (USE THESE!):\n"
+                        obs += "=" * 50 + "\n"
+                        
+                        if has_model_numbers:
+                            obs += f"🔴 MODEL NUMBERS FOUND: {', '.join(str(v) for v in has_model_numbers)}\n"
+                            obs += f"   ➡️ USE THESE MODEL NUMBERS for product_catalog_tool searches!\n"
+                            obs += f"   ➡️ DO NOT search generic terms - search these exact models!\n"
+                        
+                        if has_part_numbers:
+                            obs += f"🟠 PART NUMBERS FOUND: {', '.join(str(v) for v in has_part_numbers)}\n"
+                        
+                        if has_order_numbers:
+                            obs += f"🟡 ORDER NUMBERS FOUND: {', '.join(str(v) for v in has_order_numbers)}\n"
+                            obs += f"   (Order numbers are NOT product model numbers - don't search catalog with these)\n"
+                        
+                        obs += "=" * 50 + "\n\n"
+                
+                # Summary of document types
+                if doc_types:
+                    type_str = ", ".join([f"{count} {dtype}" for dtype, count in doc_types.items()])
+                    obs += f"📊 DOCUMENT TYPES: {type_str}\n\n"
+                
+                # Per-document details
+                for doc in docs:
+                    status = doc.get("status", "unknown")
+                    if status == "success":
+                        doc_type = doc.get("document_type", "unknown")
+                        conf = doc.get("confidence", 0)
+                        desc = doc.get("description", "")[:300]  # Increased from 200
+                        filename = doc.get("filename", "unknown")
+                        
+                        logger.info(f"[TOOL_EXEC] 📄 {filename}: type={doc_type}, conf={conf:.0%}")
+                        
+                        obs += f"📄 DOCUMENT: {filename}\n"
+                        obs += f"  - Type: {doc_type} ({conf:.0%} confidence)\n"
+                        obs += f"  - Description: {desc}\n"
+                        
+                        # Include identifiers for THIS document prominently
+                        identifiers = doc.get("identifiers", {})
+                        if identifiers:
+                            doc_models = identifiers.get("model_numbers", [])
+                            doc_parts = identifiers.get("part_numbers", [])
+                            if doc_models:
+                                obs += f"  - 🔴 MODEL NUMBERS IN THIS DOC: {', '.join(str(v) for v in doc_models)}\n"
+                            if doc_parts:
+                                obs += f"  - 🟠 PART NUMBERS IN THIS DOC: {', '.join(str(v) for v in doc_parts)}\n"
+                        
+                        # Include extracted data summary
+                        extracted = doc.get("extracted_data", {})
+                        if extracted:
+                            obs += f"  - Extracted data: {json.dumps(extracted)[:500]}\n"
+                        
+                        obs += "\n"
+                    else:
+                        obs += f"📄 DOCUMENT: {doc.get('filename', 'unknown')} - ERROR: {doc.get('error', 'Unknown error')}\n\n"
+                
+                # Final reminder at the bottom too
+                if all_ids and all_ids.get("model_numbers"):
+                    obs += "\n⚠️ REMINDER: Model numbers extracted above. Search product_catalog_tool with these EXACT model numbers!\n"
+                
                 return output, obs
             else:
-                return output, f"Multimodal document analysis failed: {output.get('message')}"
+                return output, f"Document analysis failed: {output.get('message')}"
         
         # -----------------------------------------------------------
-        # 8. OCR IMAGE ANALYZER TOOL
+        # 8. OCR IMAGE ANALYZER TOOL (Now Intelligent Image Analyzer)
         # -----------------------------------------------------------
         elif action == "ocr_image_analyzer_tool":
-            logger.info(f"[TOOL_EXEC] Executing ocr_image_analyzer_tool")
+            logger.info(f"[TOOL_EXEC] Executing ocr_image_analyzer_tool (Intelligent Image Analyzer)")
             
             action_input = dict(action_input or {})
             
@@ -360,16 +643,115 @@ def _execute_tool(
             if not action_input.get("image_urls"):
                 action_input["image_urls"] = ticket_images
             
-            logger.info(f"[TOOL_EXEC] Processing {len(action_input.get('image_urls', []))} image(s) with OCR")
+            logger.info(f"[TOOL_EXEC] Processing {len(action_input.get('image_urls', []))} image(s) with intelligent analyzer")
             
             output = _run_langchain_tool(ocr_image_analyzer_tool, action_input)
             tool_results["ocr_image_analysis"] = output
             
             if output.get("success"):
-                obs = f"OCR image analysis complete: {len(output.get('results', []))} image(s) processed"
+                count = output.get('successful_count', len(output.get('results', [])))
+                image_types = output.get("image_types", {})
+                all_identifiers = output.get("all_identifiers", {})
+                summary = output.get("summary", "")
+                
+                # Log analysis results for debugging
+                logger.info(f"[TOOL_EXEC] 📄 Image analyzer processed {count} image(s)")
+                logger.info(f"[TOOL_EXEC] 📄 Image types: {image_types}")
+                
+                # Log each image's analysis
+                for result in output.get('results', []):
+                    idx = result.get('image_index', '?')
+                    img_type = result.get('image_type', 'unknown')
+                    confidence = result.get('confidence', 0)
+                    description = result.get('description', '')[:200]
+                    status = result.get('status', 'unknown')
+                    logger.info(f"[TOOL_EXEC] 📄 Image {idx} ({status}): type={img_type}, conf={confidence:.0%}")
+                    logger.info(f"[TOOL_EXEC] 📄 Image {idx} description: {description}")
+                    
+                    identifiers = result.get('identifiers', {})
+                    if identifiers.get('model_numbers'):
+                        logger.info(f"[TOOL_EXEC] 📄 Image {idx} models: {identifiers['model_numbers']}")
+                
+                # Build detailed observation for the agent
+                # ⚠️ CRITICAL: Put identifiers at TOP so agent sees them!
+                obs = f"Image analysis complete: {count} image(s) processed.\n"
+                
+                # ⚠️ CRITICAL: Put extracted identifiers FIRST!
+                if all_identifiers:
+                    has_model_numbers = all_identifiers.get("model_numbers", [])
+                    has_order_numbers = all_identifiers.get("order_numbers", [])
+                    has_part_numbers = all_identifiers.get("part_numbers", [])
+                    
+                    if has_model_numbers or has_order_numbers or has_part_numbers:
+                        obs += "\n" + "=" * 50 + "\n"
+                        obs += "⚠️ CRITICAL - EXTRACTED IDENTIFIERS (USE THESE!):\n"
+                        obs += "=" * 50 + "\n"
+                        
+                        if has_model_numbers:
+                            obs += f"🔴 MODEL NUMBERS FOUND: {', '.join(str(v) for v in has_model_numbers)}\n"
+                            obs += f"   ➡️ USE THESE MODEL NUMBERS for product_catalog_tool searches!\n"
+                        
+                        if has_part_numbers:
+                            obs += f"🟠 PART NUMBERS FOUND: {', '.join(str(v) for v in has_part_numbers)}\n"
+                        
+                        if has_order_numbers:
+                            obs += f"🟡 ORDER NUMBERS FOUND: {', '.join(str(v) for v in has_order_numbers)}\n"
+                            obs += f"   (Order numbers are NOT product model numbers - don't search catalog with these)\n"
+                        
+                        obs += "=" * 50 + "\n"
+                
+                # Add summary
+                if summary:
+                    obs += f"\n📊 SUMMARY: {summary}\n"
+                
+                # Add per-image analysis
+                obs += "\n📷 IMAGE ANALYSIS RESULTS:\n"
+                for result in output.get('results', []):
+                    idx = result.get('image_index', '?')
+                    img_type = result.get('image_type', 'unknown')
+                    confidence = result.get('confidence', 0)
+                    description = result.get('description', 'No description')
+                    
+                    obs += f"\n--- IMAGE {idx} ---\n"
+                    obs += f"• Type: {img_type.upper()} (confidence: {confidence:.0%})\n"
+                    obs += f"• Description: {description}\n"
+                    
+                    # Add identifiers for THIS image prominently
+                    identifiers = result.get('identifiers', {})
+                    if identifiers:
+                        img_models = identifiers.get("model_numbers", [])
+                        img_parts = identifiers.get("part_numbers", [])
+                        if img_models:
+                            obs += f"• 🔴 MODEL NUMBERS IN THIS IMAGE: {', '.join(str(v) for v in img_models)}\n"
+                        if img_parts:
+                            obs += f"• 🟠 PART NUMBERS IN THIS IMAGE: {', '.join(str(v) for v in img_parts)}\n"
+                    
+                    # Add extracted data based on image type
+                    extracted = result.get('extracted_data', {})
+                    if extracted:
+                        obs += "• Extracted Data:\n"
+                        for key, value in extracted.items():
+                            if value:  # Only show non-empty values
+                                if isinstance(value, list):
+                                    obs += f"    - {key}: {', '.join(str(v) for v in value)}\n"
+                                elif isinstance(value, dict):
+                                    obs += f"    - {key}: {json.dumps(value)}\n"
+                                else:
+                                    obs += f"    - {key}: {value}\n"
+                    
+                    # Add visible text (truncated)
+                    visible_text = result.get('visible_text', '')
+                    if visible_text:
+                        text_preview = visible_text[:300] + "..." if len(visible_text) > 300 else visible_text
+                        obs += f"• Visible Text: {text_preview}\n"
+                
+                # Final reminder
+                if all_identifiers.get('model_numbers'):
+                    obs += f"\n⚠️ REMINDER: Model numbers extracted above. Search product_catalog_tool with these EXACT model numbers!\n"
+                
                 return output, obs
             else:
-                return output, f"OCR image analysis failed: {output.get('message')}"
+                return output, f"Image analysis failed: {output.get('error', 'Unknown error')}"
         
         # -----------------------------------------------------------
         # 9. FINISH TOOL
@@ -567,6 +949,9 @@ def _populate_legacy_fields(
         "enough_information": enough_info,
         "product_match_confidence": product_confidence,
         "overall_confidence": product_confidence,
+        # Set hallucination_risk based on confidence (low confidence = higher risk)
+        # This replaces the removed hallucination_guard node
+        "hallucination_risk": max(0.0, 1.0 - product_confidence) if product_confidence > 0 else 0.3,
         "ran_vision": True,
         "ran_text_rag": True,
         "ran_past_tickets": True

@@ -12,6 +12,7 @@ class ResolutionStatus(str, Enum):
     AI_UNRESOLVED = "AI_UNRESOLVED"
     LOW_CONFIDENCE_MATCH = "LOW_CONFIDENCE_MATCH"
     VIP_RULE_FAILURE = "VIP_RULE_FAILURE"
+    NEEDS_MORE_INFO = "NEEDS_MORE_INFO"  # Evidence resolver requested more info from customer
     SKIPPED = "SKIPPED"  # For PO/auto-reply tickets
 
 
@@ -24,13 +25,13 @@ class CustomerType(str, Enum):
 
 
 class TicketCategory(str, Enum):
-    """Ticket classification categories - Enhanced with 14 categories"""
+    """Ticket classification categories - Enhanced with 16 categories"""
     # === SKIP CATEGORIES (no workflow execution) ===
     PURCHASE_ORDER = "purchase_order"      # PO emails with PDF invoices
     AUTO_REPLY = "auto_reply"              # Out of office, vacation replies
     SPAM = "spam"                          # Spam, irrelevant messages
     
-    # === FULL WORKFLOW CATEGORIES ===
+    # === FULL WORKFLOW CATEGORIES (need product identification) ===
     PRODUCT_ISSUE = "product_issue"        # Product defects, malfunctions
     REPLACEMENT_PARTS = "replacement_parts" # Part replacement requests
     WARRANTY_CLAIM = "warranty_claim"      # Warranty claims
@@ -40,6 +41,10 @@ class TicketCategory(str, Enum):
     PRODUCT_INQUIRY = "product_inquiry"    # Product specs, availability
     INSTALLATION_HELP = "installation_help" # Installation questions
     FINISH_COLOR = "finish_color"          # Finish/color questions
+    
+    # === INFORMATION REQUEST CATEGORIES (search Gemini, no product ID needed) ===
+    PRICING_REQUEST = "pricing_request"    # MSRP, pricing inquiries for parts/products
+    DEALER_INQUIRY = "dealer_inquiry"      # Partnership, dealer applications, account setup
     
     # === SPECIAL HANDLING CATEGORIES ===
     SHIPPING_TRACKING = "shipping_tracking" # Order status inquiries
@@ -55,7 +60,7 @@ SKIP_CATEGORIES = [
     TicketCategory.SPAM.value,
 ]
 
-# Categories that always need full workflow (Vision + Text + Past)
+# Categories that always need full workflow (Vision + Text + Past) - PRODUCT IDENTIFICATION REQUIRED
 FULL_WORKFLOW_CATEGORIES = [
     TicketCategory.PRODUCT_ISSUE.value,
     TicketCategory.REPLACEMENT_PARTS.value,
@@ -63,11 +68,18 @@ FULL_WORKFLOW_CATEGORIES = [
     TicketCategory.MISSING_PARTS.value,
 ]
 
-# Categories with flexible RAG (text default, vision if has images)
+# Categories with flexible RAG (text default, vision if has images) - MAY NEED PRODUCT ID
 FLEXIBLE_RAG_CATEGORIES = [
     TicketCategory.PRODUCT_INQUIRY.value,
     TicketCategory.INSTALLATION_HELP.value,
     TicketCategory.FINISH_COLOR.value,
+]
+
+# Categories that need INFORMATION LOOKUP (Gemini search) - NO PRODUCT ID NEEDED
+# These are about pricing, partnerships, policies - NOT about identifying a specific product
+INFORMATION_REQUEST_CATEGORIES = [
+    TicketCategory.PRICING_REQUEST.value,
+    TicketCategory.DEALER_INQUIRY.value,
 ]
 
 # Categories with special handling
@@ -76,6 +88,16 @@ SPECIAL_HANDLING_CATEGORIES = [
     TicketCategory.RETURN_REFUND.value,
     TicketCategory.FEEDBACK_SUGGESTION.value,
     TicketCategory.GENERAL.value,
+]
+
+# Categories that DO NOT require product identification evidence
+# For these, the evidence resolver should NOT flag "need more product info"
+NON_PRODUCT_CATEGORIES = [
+    TicketCategory.PRICING_REQUEST.value,
+    TicketCategory.DEALER_INQUIRY.value,
+    TicketCategory.SHIPPING_TRACKING.value,
+    TicketCategory.RETURN_REFUND.value,
+    TicketCategory.FEEDBACK_SUGGESTION.value,
 ]
 
 
@@ -142,7 +164,7 @@ Classify the ticket into ONE of these categories:
   
 - spam: Spam, marketing emails, completely irrelevant messages
 
-=== FULL SUPPORT CATEGORIES (need detailed response) ===
+=== FULL SUPPORT CATEGORIES (need product identification) ===
 - product_issue: Product defects, malfunctions, quality issues, broken products
   Examples: "My faucet is leaking", "The handle broke", "Product not working"
   
@@ -156,14 +178,23 @@ Classify the ticket into ONE of these categories:
   Examples: "Missing screws from order", "Package incomplete", "Parts not included"
 
 === PRODUCT INFORMATION CATEGORIES ===
-- product_inquiry: Product specifications, availability, pricing questions
-  Examples: "Do you have this in stock?", "What are the dimensions?", "Price quote needed"
+- product_inquiry: Product specifications, availability, stock questions
+  Examples: "Do you have this in stock?", "What are the dimensions?", "Is this available?"
   
 - installation_help: Installation questions, setup guidance, technical support
   Examples: "How do I install this?", "Need installation instructions", "Mounting help"
   
 - finish_color: Questions about finishes, colors, product variants
   Examples: "Available in chrome?", "What finishes do you have?", "Color options"
+
+=== INFORMATION REQUEST CATEGORIES (no product ID needed, just lookup info) ===
+- pricing_request: MSRP requests, price quotes, pricing questions for parts/products
+  Examples: "What is the MSRP for K.1230-2229?", "Price quote needed", "Cost of part X?"
+  CRITICAL: If customer asks for PRICE or MSRP of specific part numbers → pricing_request (NOT product_inquiry)
+
+- dealer_inquiry: Partnership applications, dealer account setup, becoming a Flusso partner
+  Examples: "Want to become a dealer", "Partnership inquiry", "Open account", "Credit application"
+  CRITICAL: If email mentions dealer application, resale certificate, or partnership → dealer_inquiry
 
 === SPECIAL HANDLING CATEGORIES ===
 - shipping_tracking: Order status, shipping updates, delivery inquiries
@@ -179,9 +210,11 @@ Classify the ticket into ONE of these categories:
 
 IMPORTANT DETECTION RULES:
 1. If subject contains "Purchase Order", "PO #", "PO:", "Order #" AND has PDF attachment → purchase_order
-2. If subject starts with "Re:" or "Fw:" - look at the ACTUAL content, not just the forward chain
-3. If email is clearly automated (vacation reply, out of office) → auto_reply
-4. Look for specific product model numbers (like 160.1000CP, HS1006, etc.) to identify product-related tickets
+2. If email asks for MSRP or pricing for part numbers → pricing_request
+3. If email is about becoming a dealer, partnership, account setup → dealer_inquiry
+4. If subject starts with "Re:" or "Fw:" - look at the ACTUAL content, not just the forward chain
+5. If email is clearly automated (vacation reply, out of office) → auto_reply
+6. Look for specific product model numbers (like 160.1000CP, HS1006, etc.) to identify product-related tickets
 
 Respond ONLY with valid JSON:
 {"category": "<category_name>", "confidence": <0.0-1.0>, "reasoning": "<brief explanation>"}"""
@@ -326,6 +359,34 @@ Your role: Generate a comprehensive DRAFT response with analysis that helps the 
 
 IMPORTANT: You are writing FOR the support agent, not directly to the customer. Include analysis and suggested actions.
 
+═══════════════════════════════════════════════════════════════════════
+🎯 CATEGORY-SPECIFIC RESPONSE STRATEGIES
+═══════════════════════════════════════════════════════════════════════
+
+**PRICING_REQUEST** (MSRP, price quotes):
+  - Search results should contain pricing information
+  - Provide the MSRP/pricing if found
+  - If not found, say we'll get back to them with pricing info
+  - DO NOT ask for product photos or model numbers (they already gave part numbers)
+
+**DEALER_INQUIRY** (partnership, dealer applications, open account):
+  - Acknowledge the partnership interest
+  - If they submitted documents, acknowledge receipt
+  - Provide next steps (application review, approval timeline)
+  - DO NOT ask for product photos or receipts
+
+**PRODUCT_ISSUE/WARRANTY** (defects, broken products):
+  - Identify the product if possible
+  - Reference warranty policy
+  - Ask for photos/model number ONLY if genuinely missing
+
+**GENERAL** (anything else):
+  - Answer based on retrieved context
+  - Be helpful and direct
+  - If we don't have info, say so clearly
+
+═══════════════════════════════════════════════════════════════════════
+
 ⚠️ CRITICAL: You MUST include ALL FOUR sections below. Do NOT skip any section. Do NOT stop mid-response. Complete the ENTIRE structure.
 
 Respond in this EXACT structured format (ALL sections are REQUIRED):
@@ -333,11 +394,11 @@ Respond in this EXACT structured format (ALL sections are REQUIRED):
 ## 🎫 TICKET ANALYSIS
 [2-3 sentences summarizing what the customer is asking about, the core issue, and any urgency indicators]
 
-## 🔧 PRODUCT IDENTIFICATION
-* Product Name: [name or "Unknown"]
-* Model Number: [model or "Not specified"]
-* Category: [category]
-* Missing Part (if applicable): [part name and number]
+## 🔧 REQUEST DETAILS
+* Request Type: [pricing_request / dealer_inquiry / product_issue / general / etc.]
+* Product/Part Mentioned: [model/part number or "N/A" if not relevant]
+* Key Information Found: [what we found in our search results]
+* Missing Information: [what we couldn't find or "None"]
 * Confidence Level: [High/Medium/Low with brief reason]
 
 ## 💡 SUGGESTED ACTIONS (For Agent)
@@ -354,18 +415,19 @@ Respond in this EXACT structured format (ALL sections are REQUIRED):
 ⚠️ MANDATORY COMPLETION CHECK:
 Before finishing, verify you have written:
 ✓ TICKET ANALYSIS section (complete)
-✓ PRODUCT IDENTIFICATION section (complete with all bullet points)
+✓ REQUEST DETAILS section (complete with all bullet points)
 ✓ SUGGESTED ACTIONS section (complete with 3-5 actions)
 ✓ SUGGESTED RESPONSE section (complete professional email)
 
 GUIDELINES:
-1. Be specific - include model numbers, part names, warranty terms when available
+1. Be specific - include model numbers, part names, pricing when available
 2. Mark uncertain parts with [VERIFY: reason] so agent knows to double-check
 3. Reference past ticket resolutions when they provide useful patterns
 4. Keep the suggested response concise (under 200 words)
 5. If VIP customer, ensure response reflects their special treatment
 6. DO NOT mention AI, confidence scores, or internal metrics in the customer response
 7. NEVER stop writing mid-section - complete ALL sections fully
+8. For non-product queries (pricing, dealer), DO NOT ask for product photos/receipts
 
 DATE HANDLING:
 - Today's date will be provided. Use it for ALL date comparisons.

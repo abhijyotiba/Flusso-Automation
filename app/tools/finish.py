@@ -23,10 +23,37 @@ def _safe_extract_list(value: Any, default_type: str = "str") -> List[Any]:
     return []
 
 
+def _normalize_product_details(value: Any) -> Dict[str, Any]:
+    """
+    Normalize product_details to always be a dict.
+    Handles: None, dict, list of dicts
+    """
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, list):
+        # If it's a list, take the first item (primary product)
+        # or merge multiple products into one response
+        if len(value) == 0:
+            return {}
+        elif len(value) == 1:
+            return value[0] if isinstance(value[0], dict) else {}
+        else:
+            # Multiple products - take first as primary, note others
+            primary = value[0] if isinstance(value[0], dict) else {}
+            # Store additional products in the dict
+            additional = [p for p in value[1:] if isinstance(p, dict)]
+            if additional:
+                primary["additional_products"] = additional
+            return primary
+    return {}
+
+
 @tool
 def finish_tool(
     product_identified: bool = False,
-    product_details: Optional[Dict[str, Any]] = None,
+    product_details: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
     relevant_documents: Optional[Union[List[Any], Any]] = None,
     relevant_images: Optional[Union[List[Any], Any]] = None,
     past_tickets: Optional[Union[List[Any], Any]] = None,
@@ -46,7 +73,9 @@ def finish_tool(
     
     Args:
         product_identified: Did you successfully identify the product?
-        product_details: Product info dict (model, name, category, confidence)
+        product_details: Product info - can be a dict OR a list of dicts for multiple products
+                        Example dict: {"model": "DKM.2420", "name": "Diverter Valve", "category": "Bathing"}
+                        Example list: [{"model": "DKM.2420", ...}, {"model": "196.1280", ...}]
         relevant_documents: Documents found (flexible: list, dict, or string)
         relevant_images: Product images (flexible: list, dict, or string)
         past_tickets: Similar tickets (flexible: list, dict, or string)
@@ -63,7 +92,8 @@ def finish_tool(
     logger.info(f"[FINISH] Product: {product_identified}, Confidence: {confidence:.2f}")
     
     # Normalize inputs - be VERY lenient
-    product_details = product_details or {}
+    # Handle product_details being either a dict OR a list
+    normalized_product = _normalize_product_details(product_details)
     
     # Convert various input formats to lists
     docs = _safe_extract_list(relevant_documents)
@@ -103,9 +133,15 @@ def finish_tool(
     parts = []
     
     if product_identified:
-        model = product_details.get("model", "Unknown")
-        name = product_details.get("name", "Product")
+        model = normalized_product.get("model", "Unknown")
+        name = normalized_product.get("name", "Product")
         parts.append(f"✅ Product: {model} ({name})")
+        
+        # Note additional products if present
+        additional = normalized_product.get("additional_products", [])
+        if additional:
+            additional_models = [p.get("model", "?") for p in additional]
+            parts.append(f"📦 Related: {', '.join(additional_models)}")
     else:
         parts.append("⚠️ Product not identified")
     
@@ -125,7 +161,7 @@ def finish_tool(
     return {
         "finished": True,
         "product_identified": product_identified,
-        "product_details": product_details,
+        "product_details": normalized_product,
         "relevant_documents": docs,
         "relevant_images": images,
         "past_tickets": tickets,

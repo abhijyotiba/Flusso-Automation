@@ -3,7 +3,11 @@ Attachment Processor Utility
 Extracts text content from various attachment types (PDF, DOCX, XLSX, TXT, etc.)
 Primary focus: PDF processing using PyMuPDF
 
-NOTE: Freshdesk attachment URLs require authentication!
+NOTE: Freshdesk attachment URLs can be:
+  1. Direct API URLs - require Freshdesk API key auth
+  2. S3 signed URLs (amazonaws.com) - already contain AWS signature, NO auth needed
+  
+Adding auth to S3 signed URLs causes HTTP 400 errors!
 """
 
 import logging
@@ -91,23 +95,45 @@ def download_attachment(url: str, timeout: int = 30) -> Tuple[Optional[bytes], O
     """
     Download attachment from Freshdesk URL.
     
-    NOTE: Freshdesk attachment URLs require Basic Auth with API key!
+    IMPORTANT: Freshdesk uses two types of attachment URLs:
+    1. Direct Freshdesk API URLs - require Basic Auth with API key
+    2. S3 signed URLs (amazonaws.com) - already contain AWS signature, NO auth needed
+    
+    Adding auth to S3 signed URLs causes HTTP 400 errors!
     
     Returns:
         Tuple of (file_bytes, error_message)
     """
     try:
-        logger.info(f"📥 Downloading attachment: {url[:80]}...")
+        logger.info(f"📥 Downloading attachment: {url[:100]}...")
         
-        # Freshdesk attachments require authentication
-        auth = HTTPBasicAuth(settings.freshdesk_api_key, "X")
-        
-        response = requests.get(
-            url, 
-            auth=auth,
-            timeout=timeout,
-            stream=True  # Stream for large files
+        # Detect if this is an S3 signed URL (contains amazonaws.com and signature)
+        # S3 URLs already have authentication built into the URL (X-Amz-Signature)
+        is_s3_signed_url = (
+            "amazonaws.com" in url.lower() or 
+            "X-Amz-Signature" in url or
+            "x-amz-signature" in url.lower()
         )
+        
+        if is_s3_signed_url:
+            # S3 signed URLs should NOT use authentication - it causes 400 errors
+            logger.info(f"📥 Detected S3 signed URL - downloading without auth")
+            response = requests.get(
+                url,
+                timeout=timeout,
+                stream=True
+            )
+        else:
+            # Direct Freshdesk API URLs require Basic Auth
+            logger.info(f"📥 Direct Freshdesk URL - using API key auth")
+            auth = HTTPBasicAuth(settings.freshdesk_api_key, "X")
+            response = requests.get(
+                url, 
+                auth=auth,
+                timeout=timeout,
+                stream=True
+            )
+        
         response.raise_for_status()
         
         # Get file size for logging
@@ -120,8 +146,12 @@ def download_attachment(url: str, timeout: int = 30) -> Tuple[Optional[bytes], O
     except requests.exceptions.HTTPError as e:
         if e.response.status_code == 401:
             return None, "Authentication failed - check Freshdesk API key"
+        elif e.response.status_code == 403:
+            return None, "Access forbidden - S3 URL may have expired"
         elif e.response.status_code == 404:
             return None, "Attachment not found (may have been deleted)"
+        elif e.response.status_code == 400:
+            return None, "Bad request - URL may be malformed or expired"
         return None, f"HTTP error: {e.response.status_code}"
     except requests.exceptions.RequestException as e:
         return None, f"Download failed: {str(e)}"

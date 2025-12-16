@@ -260,15 +260,168 @@ def draft_final_response(state: TicketState) -> Dict[str, Any]:
     
     # Start node log
     node_log = log_node_start("draft_response", {})
+    
+    # === Check for SYSTEM ERRORS first (API failures, timeouts, etc.) ===
+    # These should NOT send "need more info" to customers - they're internal errors
+    workflow_error = state.get("workflow_error")
+    workflow_error_type = state.get("workflow_error_type")
+    is_system_error = state.get("is_system_error", False)
+    
+    if workflow_error or is_system_error:
+        logger.error(f"{STEP_NAME} | ❌ SYSTEM ERROR detected: {workflow_error}")
+        
+        ticket_subject = state.get("ticket_subject", "No subject")
+        ticket_text = state.get("ticket_text", "")[:500]
+        requester_name = state.get("requester_name", "Customer")
+        error_node = state.get("workflow_error_node", "Unknown")
+        
+        # Create internal error note (NOT a customer message)
+        error_header = f"""<div style="background: linear-gradient(135deg, #475569 0%, #64748b 100%); border-radius: 8px; padding: 16px; margin-bottom: 20px; font-family: Arial, sans-serif;">
+    <div style="display: flex; align-items: center; margin-bottom: 12px;">
+        <span style="font-size: 18px; margin-right: 8px;">⚙️</span>
+        <span style="color: white; font-weight: bold; font-size: 16px;">PROCESSING INTERRUPTED - MANUAL REVIEW</span>
+    </div>
+    <div style="background: rgba(255,255,255,0.1); padding: 12px; border-radius: 6px;">
+        <span style="color: #e2e8f0; font-size: 13px;">The AI assistant couldn't complete processing. Please review and respond to this ticket.</span>
+    </div>
+</div>
+"""
+        
+        # Build detailed error note for agent
+        error_details = f"""
+<div style="padding: 16px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; margin-bottom: 16px;">
+    <h4 style="color: #334155; margin-bottom: 12px;">📋 TICKET SUMMARY</h4>
+    <p style="margin: 4px 0;"><strong>Subject:</strong> {ticket_subject}</p>
+    <p style="margin: 4px 0;"><strong>Customer:</strong> {requester_name}</p>
+    <p style="margin: 4px 0; font-size: 13px;"><strong>Preview:</strong> {ticket_text[:300]}...</p>
+</div>
+
+<div style="padding: 16px; background: #f1f5f9; border: 1px solid #cbd5e1; border-radius: 8px;">
+    <h4 style="color: #475569; margin-bottom: 8px;">ℹ️ TECHNICAL DETAILS</h4>
+    <p style="margin: 4px 0;"><strong>Issue:</strong> {workflow_error_type or 'Processing interrupted'}</p>
+    <p style="margin: 4px 0;"><strong>Stage:</strong> {error_node}</p>
+    <p style="margin: 4px 0; font-size: 12px; color: #64748b;"><strong>Details:</strong> {workflow_error or 'No additional details'}</p>
+</div>
+
+<div style="padding: 16px; background: #f0f9ff; border: 1px solid #7dd3fc; border-radius: 8px; margin-top: 16px;">
+    <h4 style="color: #0369a1; margin-bottom: 8px;">📝 NEXT STEPS</h4>
+    <p style="margin: 4px 0; font-size: 13px;">Please review the ticket and respond to the customer manually. This may have been a temporary service issue.</p>
+</div>
+"""
+        
+        duration = time.time() - start_time
+        logger.info(f"{STEP_NAME} | Generated system error note in {duration:.2f}s")
+        
+        return {
+            "draft_response": error_header + error_details,
+            "overall_confidence": 0.0,
+            "is_system_error": True,
+            "audit_events": add_audit_event(
+                state,
+                event="draft_final_response",
+                event_type="SYSTEM_ERROR",
+                details={
+                    "error_type": workflow_error_type,
+                    "error_message": workflow_error,
+                    "error_node": error_node,
+                },
+            )["audit_events"],
+        }
+
+    # === Check for evidence-based info request (LEGITIMATE need for more info) ===
+    # Only show this when evidence analysis ACTUALLY determined we need more info
+    info_request_response = state.get("info_request_response", "")
+    needs_more_info = state.get("needs_more_info", False)
+    evidence_analysis = state.get("evidence_analysis", {})
+    
+    # Make sure this is a legitimate info request, not a fallback
+    evidence_decision = evidence_analysis.get("resolution_action", "")
+    is_legitimate_info_request = (
+        needs_more_info 
+        and info_request_response 
+        and evidence_decision in ["request_info", "escalate"]
+        and evidence_analysis.get("final_confidence", 0) < 0.5  # Only if actually low confidence
+    )
+    
+    if is_legitimate_info_request:
+        logger.info(f"{STEP_NAME} | ℹ️ Legitimate info request - evidence confidence: {evidence_analysis.get('final_confidence', 0):.0%}")
+        
+        # Handle both dict and string formats for info_request_response
+        if isinstance(info_request_response, dict):
+            customer_message = info_request_response.get("customer_message", "")
+            private_note = info_request_response.get("private_note", "")
+        else:
+            # Legacy format: string response
+            customer_message = str(info_request_response)
+            private_note = evidence_analysis.get("private_note", "")
+        
+        # Convert to HTML
+        html_response = convert_to_html(customer_message)
+        
+        # Build simple info request header
+        info_header = f"""<div style="background: #0369a1; border-radius: 6px; padding: 12px; margin-bottom: 16px;">
+    <span style="color: white; font-weight: bold;">ℹ️ Information Needed</span>
+</div>
+
+"""
+        # Add private note section for human agent (compact)
+        private_note_html = ""
+        if private_note:
+            private_note_html = f"""
+<div style="margin-top: 16px; padding: 12px; background: #f8fafc; border-left: 3px solid #0369a1; font-size: 12px;">
+    <strong>🔒 Agent Note:</strong><br/>
+    <span style="color: #475569;">{convert_to_html(private_note)}</span>
+</div>
+"""
+        
+        response_with_header = info_header + html_response + private_note_html
+        
+        duration = time.time() - start_time
+        logger.info(f"{STEP_NAME} | ✅ Generated info-request response in {duration:.2f}s")
+        
+        log_node_complete(
+            node_log,
+            output_summary={
+                "response_type": "info_request",
+                "evidence_decision": evidence_analysis.get("resolution_action", "UNKNOWN"),
+                "evidence_confidence": evidence_analysis.get("final_confidence", 0),
+                "response_length": len(customer_message),
+                "duration_seconds": duration,
+            },
+            llm_response=customer_message
+        )
+        
+        return {
+            "draft_response": response_with_header,
+            "overall_confidence": 0.0,  # Low confidence since we need more info
+            "audit_events": add_audit_event(
+                state,
+                event="draft_final_response",
+                event_type="INFO_REQUEST",
+                details={
+                    "response_type": "legitimate_info_request",
+                    "evidence_decision": evidence_analysis.get("resolution_action", "UNKNOWN"),
+                    "evidence_confidence": evidence_analysis.get("final_confidence", 0),
+                    "response_length": len(customer_message),
+                    "has_private_note": bool(private_note),
+                },
+            )["audit_events"],
+        }
 
     ticket_text = state.get("ticket_text", "") or ""
     subject = state.get("ticket_subject", "") or ""
     context = state.get("multimodal_context", "") or ""
+    ticket_category = state.get("ticket_category", "general") or "general"
 
-    # Decision metrics
+    # Get evidence resolver analysis for confidence metrics
+    evidence_analysis = state.get("evidence_analysis", {})
+    evidence_confidence = evidence_analysis.get("final_confidence", 0.0) if evidence_analysis else 0.0
+    
+    # Decision metrics - use evidence_resolver's confidence as primary source
     enough_info = state.get("enough_information", False)
-    risk = state.get("hallucination_risk", 1.0)
-    confidence = state.get("product_match_confidence", 0.0)
+    confidence = state.get("product_match_confidence", evidence_confidence)
+    # Derive risk from evidence confidence (low confidence = higher risk)
+    risk = max(0.0, 1.0 - confidence) if confidence > 0 else state.get("hallucination_risk", 0.3)
     vip_ok = state.get("vip_compliant", True)
     
     # Vision quality metrics
@@ -287,8 +440,9 @@ def draft_final_response(state: TicketState) -> Dict[str, Any]:
         "subject": subject[:100],
         "ticket_text_length": len(ticket_text),
         "context_length": len(context),
+        "ticket_category": ticket_category,
         "enough_info": enough_info,
-        "hallucination_risk": risk,
+        "evidence_confidence": evidence_confidence,
         "product_confidence": confidence,
         "vip_compliant": vip_ok,
         "vision_quality": vision_quality,
@@ -297,8 +451,8 @@ def draft_final_response(state: TicketState) -> Dict[str, Any]:
         "source_tickets_count": len(source_tickets)
     }
     
-    logger.info(f"{STEP_NAME} | 📥 Input: subject='{subject[:50]}...', context_len={len(context)}")
-    logger.info(f"{STEP_NAME} | 📊 Metrics: enough_info={enough_info}, risk={risk:.2f}, confidence={confidence:.2f}, vip_ok={vip_ok}")
+    logger.info(f"{STEP_NAME} | 📥 Input: subject='{subject[:50]}...', category={ticket_category}, context_len={len(context)}")
+    logger.info(f"{STEP_NAME} | 📊 Metrics: enough_info={enough_info}, confidence={confidence:.2f}, evidence_conf={evidence_confidence:.2f}, vip_ok={vip_ok}")
     logger.info(f"{STEP_NAME} | 🖼 Vision: quality={vision_quality}")
     logger.info(f"{STEP_NAME} | 📎 Sources: docs={len(source_documents)}, products={len(source_products)}, tickets={len(source_tickets)}")
 
@@ -333,10 +487,40 @@ Visual matches have low confidence. Reason: {vision_reason}
     current_date = datetime.now().strftime("%m-%d-%Y")  # e.g., "12-05-2025" (MM-DD-YYYY)
     current_date_readable = datetime.now().strftime("%B %d, %Y")  # e.g., "December 05, 2025"
 
+    # Build category-specific guidance
+    category_guidance = ""
+    if ticket_category == "pricing_request":
+        category_guidance = """
+⚠️ CATEGORY: PRICING REQUEST
+- Customer is asking for pricing/MSRP
+- DO NOT ask for product photos or receipts
+- Provide pricing if found in search results
+- If pricing not found, say we will follow up with pricing information
+"""
+    elif ticket_category == "dealer_inquiry":
+        category_guidance = """
+⚠️ CATEGORY: DEALER/PARTNERSHIP INQUIRY  
+- Customer wants to become a dealer or partner
+- Acknowledge their interest in Flusso partnership
+- If they submitted documents (application, resale certificate), acknowledge receipt
+- Provide next steps for application review
+- DO NOT ask for product photos or model numbers
+"""
+    elif ticket_category in ["shipping_tracking", "return_refund"]:
+        category_guidance = f"""
+⚠️ CATEGORY: {ticket_category.upper().replace('_', ' ')}
+- This is about order logistics, not product identification
+- Focus on the customer's order/return request
+- DO NOT ask for product photos unless needed for the return
+"""
+
     meta = f"""
 TODAY'S DATE: {current_date} ({current_date_readable})
 Use this date for ALL date comparisons. Any date before {current_date} is in the PAST.
 Date format is MM-DD-YYYY.
+
+TICKET CATEGORY: {ticket_category}
+{category_guidance}
 
 DECISION METRICS:
 - Enough Information: {enough_info}
@@ -350,6 +534,8 @@ DECISION METRICS:
     user_prompt = f"""CUSTOMER TICKET:
 Subject: {subject}
 Description: {ticket_text}
+
+TICKET CATEGORY: {ticket_category}
 
 RETRIEVED CONTEXT:
 {context}

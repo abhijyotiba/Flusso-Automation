@@ -379,13 +379,11 @@ async def get_workflow_info():
         "workflow_flow": [
             "fetch_ticket",
             "routing",
-            "react_agent (loops)",
+            "react_agent (loops with evidence_resolver)",
             "customer_lookup",
             "vip_rules",
-            "hallucination_guard",
-            "confidence_check",
-            "vip_compliance",
             "draft_response",
+            "vip_compliance",
             "resolution_logic",
             "freshdesk_update",
             "audit_log"

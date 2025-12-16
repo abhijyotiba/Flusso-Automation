@@ -108,9 +108,14 @@ def _determine_rag_requirements(category: str, has_images: bool) -> tuple:
     Categories:
     - FULL_WORKFLOW (product_issue, replacement_parts, warranty_claim, missing_parts): Both RAGs
     - FLEXIBLE_RAG (product_inquiry, installation_help, finish_color): Text RAG + Vision if images
+    - INFORMATION_REQUEST (pricing_request, dealer_inquiry): Text RAG only, no vision
     - SPECIAL (shipping_tracking, return_refund, feedback_suggestion, general): Text RAG only
     """
-    from app.config.constants import FULL_WORKFLOW_CATEGORIES, FLEXIBLE_RAG_CATEGORIES
+    from app.config.constants import (
+        FULL_WORKFLOW_CATEGORIES, 
+        FLEXIBLE_RAG_CATEGORIES,
+        INFORMATION_REQUEST_CATEGORIES
+    )
     
     if category in FULL_WORKFLOW_CATEGORIES:
         # Always run both for product-related issues
@@ -119,6 +124,10 @@ def _determine_rag_requirements(category: str, has_images: bool) -> tuple:
     elif category in FLEXIBLE_RAG_CATEGORIES:
         # Text RAG always, vision only if images present
         return has_images, True
+    
+    elif category in INFORMATION_REQUEST_CATEGORIES:
+        # Information lookup only - use Gemini file search, no vision needed
+        return False, True
     
     else:
         # Special handling categories - text RAG only
@@ -368,7 +377,7 @@ def classify_ticket_category(state: TicketState) -> Dict[str, Any]:
 # -------------------------------------------------------------
 def fallback_classification(subject: str, text: str, tags: list) -> str:
     """
-    Rule-based fallback when LLM fails. Uses our 14-category system.
+    Rule-based fallback when LLM fails. Uses our 16-category system.
     Uses scoring to handle keyword overlap - best match wins.
     """
     content = (subject + " " + text).lower()
@@ -404,6 +413,25 @@ def fallback_classification(subject: str, text: str, tags: list) -> str:
         category_scores["spam"] = spam_score + 5  # Boost skip categories
     
     # -------------------------------------------
+    # INFORMATION REQUEST categories (high priority - no product ID needed)
+    # -------------------------------------------
+    
+    # Pricing request detection
+    pricing_keywords = ["msrp", "price", "pricing", "cost", "how much", "quote", 
+                       "price list", "price for", "what does", "wholesale"]
+    pricing_score = sum(2.0 for kw in pricing_keywords if kw in content)
+    if pricing_score > 0:
+        category_scores["pricing_request"] = pricing_score + 3
+    
+    # Dealer/Partnership inquiry detection
+    dealer_keywords = ["dealer", "partnership", "partner", "become a dealer", "distributor",
+                      "open account", "credit application", "resale certificate", "wholesale",
+                      "dealer application", "flusso partner", "flusso family"]
+    dealer_score = sum(2.0 for kw in dealer_keywords if kw in content)
+    if dealer_score > 0:
+        category_scores["dealer_inquiry"] = dealer_score + 4  # High priority
+    
+    # -------------------------------------------
     # FULL WORKFLOW categories - tag-based matching
     # -------------------------------------------
     tag_map = {
@@ -420,7 +448,10 @@ def fallback_classification(subject: str, text: str, tags: list) -> str:
         "tracking": "shipping_tracking",
         "shipping": "shipping_tracking",
         "feedback": "feedback_suggestion",
-        "suggestion": "feedback_suggestion"
+        "suggestion": "feedback_suggestion",
+        "pricing": "pricing_request",
+        "dealer": "dealer_inquiry",
+        "partner": "dealer_inquiry"
     }
 
     # Tags get high weight (they're usually accurate)
@@ -444,7 +475,8 @@ def fallback_classification(subject: str, text: str, tags: list) -> str:
         
         # Flexible categories
         "product_inquiry": ["question about", "inquiry", "wondering about", "does this",
-                           "what is the", "how does", "is it compatible"],
+                           "what is the", "how does", "is it compatible", "in stock", 
+                           "available", "dimensions"],
         "installation_help": ["install", "installation", "setup", "mount", "how to fit",
                              "instructions", "assembly"],
         "finish_color": ["finish", "color", "colour", "chrome", "nickel", "bronze",

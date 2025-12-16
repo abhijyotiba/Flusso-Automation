@@ -1,6 +1,7 @@
 """
 Resolution Logic Node
-Determines final status and tags based on all checks.
+Determines final status and tags based on evidence resolver and VIP compliance.
+Simplified: Uses evidence_resolver's confidence instead of separate hallucination/confidence nodes.
 """
 
 import logging
@@ -19,6 +20,9 @@ STEP_NAME = "1️⃣5️⃣ RESOLUTION_LOGIC"
 def decide_tags_and_resolution(state: TicketState) -> Dict[str, Any]:
     """
     Determine resolution status and tags.
+    
+    Uses evidence_resolver's confidence (from react_agent) instead of
+    separate hallucination_guard and confidence_check nodes.
 
     Returns:
         Partial update with:
@@ -30,15 +34,53 @@ def decide_tags_and_resolution(state: TicketState) -> Dict[str, Any]:
     start_time = time.time()
     logger.info(f"{STEP_NAME} | ▶ Determining final resolution status...")
 
+    # === Check for system errors first ===
+    is_system_error = state.get("is_system_error", False)
+    workflow_error = state.get("workflow_error")
+    
+    if is_system_error or workflow_error:
+        logger.error(f"{STEP_NAME} | 🚨 SYSTEM ERROR detected - marking for manual review")
+        tags: List[str] = ["SYSTEM_ERROR", "NEEDS_HUMAN_REVIEW", "MANUAL_REQUIRED"]
+        
+        duration = time.time() - start_time
+        return {
+            "resolution_status": "SYSTEM_ERROR",
+            "extra_tags": tags,
+            "final_response_public": state.get("draft_response", ""),  # Will contain error note
+            "audit_events": add_audit_event(
+                state,
+                event="resolution_logic",
+                event_type="SYSTEM_ERROR",
+                details={
+                    "decision_reason": f"System error: {workflow_error}",
+                    "error_type": state.get("workflow_error_type"),
+                    "duration_seconds": duration,
+                }
+            )["audit_events"],
+        }
+
     enough_info = state.get("enough_information", False)
-    risk = state.get("hallucination_risk", 1.0)
-    confidence = state.get("product_match_confidence", 0.0)
     vip_ok = state.get("vip_compliant", True)
     
+    # Get evidence resolver decision (primary source of truth)
+    needs_more_info = state.get("needs_more_info", False)
+    evidence_analysis = state.get("evidence_analysis", {})
+    evidence_action = evidence_analysis.get("resolution_action", "proceed") if evidence_analysis else "proceed"
+    evidence_confidence = evidence_analysis.get("final_confidence", 0.0) if evidence_analysis else 0.0
+    
+    # Use evidence resolver's confidence, fallback to product_match_confidence from react_agent
+    confidence = state.get("product_match_confidence", evidence_confidence)
+    # Use evidence resolver's assessment for risk (inverted confidence = risk)
+    # If evidence is low confidence, that implies higher risk
+    risk = max(0.0, 1.0 - evidence_confidence) if evidence_confidence > 0 else state.get("hallucination_risk", 0.3)
+    
     logger.info(f"{STEP_NAME} | 📥 Input metrics:")
+    logger.info(f"{STEP_NAME} |   - needs_more_info: {needs_more_info}")
+    logger.info(f"{STEP_NAME} |   - evidence_action: {evidence_action}")
+    logger.info(f"{STEP_NAME} |   - evidence_confidence: {evidence_confidence:.2f}")
     logger.info(f"{STEP_NAME} |   - enough_information: {enough_info}")
-    logger.info(f"{STEP_NAME} |   - hallucination_risk: {risk:.2f} (threshold: {settings.hallucination_risk_threshold})")
     logger.info(f"{STEP_NAME} |   - product_confidence: {confidence:.2f} (threshold: {settings.product_confidence_threshold})")
+    logger.info(f"{STEP_NAME} |   - derived_risk: {risk:.2f}")
     logger.info(f"{STEP_NAME} |   - vip_compliant: {vip_ok}")
 
     tags: List[str] = list(state.get("extra_tags", []) or [])
@@ -47,11 +89,20 @@ def decide_tags_and_resolution(state: TicketState) -> Dict[str, Any]:
     status = ResolutionStatus.RESOLVED.value
     decision_reason = ""
 
-    # Priority 1: Not enough information or high hallucination risk
-    if not enough_info or risk > settings.hallucination_risk_threshold:
+    # ⚠️ PRIORITY 0: Evidence resolver says we need more info from customer
+    # This MUST be checked first - if evidence_resolver detected conflicting 
+    # evidence or low confidence, we should NOT mark as RESOLVED.
+    if needs_more_info or evidence_action == "request_info":
+        status = ResolutionStatus.NEEDS_MORE_INFO.value
+        tags.extend(["NEEDS_MORE_INFO", "AWAITING_CUSTOMER_REPLY"])
+        decision_reason = f"evidence resolver requested more info (action={evidence_action}, confidence={evidence_confidence:.2f})"
+        logger.info(f"{STEP_NAME} | 📨 Status: NEEDS_MORE_INFO - {decision_reason}")
+
+    # Priority 1: Not enough information gathered
+    elif not enough_info:
         status = ResolutionStatus.AI_UNRESOLVED.value
         tags.extend(["AI_UNRESOLVED", "NEEDS_HUMAN_REVIEW"])
-        decision_reason = f"insufficient info ({enough_info}) OR high hallucination risk ({risk:.2f} > {settings.hallucination_risk_threshold})"
+        decision_reason = f"insufficient information gathered (enough_info={enough_info})"
         logger.info(f"{STEP_NAME} | 🚨 Status: AI_UNRESOLVED - {decision_reason}")
 
     # Priority 2: Low product confidence
@@ -59,20 +110,20 @@ def decide_tags_and_resolution(state: TicketState) -> Dict[str, Any]:
         status = ResolutionStatus.LOW_CONFIDENCE_MATCH.value
         tags.extend(["LOW_CONFIDENCE_MATCH", "NEEDS_HUMAN_REVIEW"])
         decision_reason = f"low product confidence ({confidence:.2f} < {settings.product_confidence_threshold})"
-        logger.info(f"{STEP_NAME} | ⚠ Status: LOW_CONFIDENCE_MATCH - {decision_reason}")
+        logger.info(f"{STEP_NAME} | ⚠️ Status: LOW_CONFIDENCE_MATCH - {decision_reason}")
 
     # Priority 3: VIP rule failure
     elif not vip_ok:
         status = ResolutionStatus.VIP_RULE_FAILURE.value
         tags.extend(["VIP_RULE_FAILURE", "NEEDS_HUMAN_REVIEW"])
         decision_reason = "VIP compliance check failed"
-        logger.info(f"{STEP_NAME} | ⚠ Status: VIP_RULE_FAILURE - {decision_reason}")
+        logger.info(f"{STEP_NAME} | ⚠️ Status: VIP_RULE_FAILURE - {decision_reason}")
 
-    # All checks passed
+    # All checks passed - can mark as resolved
     else:
         status = ResolutionStatus.RESOLVED.value
         tags.append("AI_PROCESSED")
-        decision_reason = "all checks passed"
+        decision_reason = "all checks passed (evidence confirmed, low risk, high confidence)"
         logger.info(f"{STEP_NAME} | ✅ Status: RESOLVED - {decision_reason}")
 
     # Remove duplicates
@@ -90,8 +141,10 @@ def decide_tags_and_resolution(state: TicketState) -> Dict[str, Any]:
             "resolution_status": status,
             "decision_reason": decision_reason,
             "tags": tags,
+            "needs_more_info": needs_more_info,
+            "evidence_action": evidence_action,
+            "evidence_confidence": evidence_confidence,
             "enough_info": enough_info,
-            "hallucination_risk": risk,
             "product_confidence": confidence,
             "vip_compliant": vip_ok,
         },

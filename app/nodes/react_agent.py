@@ -1,6 +1,7 @@
 """
 ReACT Agent Node - FIXED VERSION
 Reasoning + Acting Loop with proper context tracking
+Enhanced with Planning Module (Phase 1)
 """
 
 import logging
@@ -20,15 +21,126 @@ from app.nodes.react_agent_helpers import (
 
 )
 
+# Planning module import
+try:
+    from app.nodes.planner import (
+        create_execution_plan, 
+        get_plan_context_for_agent,
+        should_follow_plan_step
+    )
+    PLANNER_AVAILABLE = True
+except ImportError:
+    PLANNER_AVAILABLE = False
+    logging.getLogger(__name__).warning("Planner module not available")
+
+# Evidence resolver import
+try:
+    from app.nodes.evidence_resolver import (
+        analyze_evidence,
+        EvidenceItem,
+        generate_info_request_response,
+        should_request_more_info,
+        VISION_HIGH_THRESHOLD,
+        VISION_MEDIUM_THRESHOLD
+    )
+    EVIDENCE_RESOLVER_AVAILABLE = True
+except ImportError:
+    EVIDENCE_RESOLVER_AVAILABLE = False
+    logging.getLogger(__name__).warning("Evidence resolver module not available")
+
 logger = logging.getLogger(__name__)
 STEP_NAME = "🤖 REACT_AGENT"
 
 MAX_ITERATIONS = 15
 
 # COMPREHENSIVE System Prompt with All Tools
-REACT_SYSTEM_PROMPT = """You are an intelligent support agent helping resolve customer tickets for a plumbing fixtures company.
+REACT_SYSTEM_PROMPT = """You are an intelligent support agent helping resolve customer tickets for Flusso Kitchen & Bath company.
 
 Your goal: Gather ALL necessary information to help the customer by using available tools strategically and efficiently.
+
+═══════════════════════════════════════════════════════════════════════
+⚠️ CRITICAL RULE: ANALYZE ALL ATTACHMENTS FIRST
+═══════════════════════════════════════════════════════════════════════
+
+🔴 MANDATORY FIRST STEP: If the ticket has ANY attachments (images, PDFs, documents):
+   1. Use attachment_analyzer_tool or ocr_image_analyzer_tool to analyze ALL attachments
+   2. Extract ALL available information (model numbers, part numbers, descriptions, order numbers from shipping labels)
+   3. THEN decide which tools to use based on what you found
+   4. DO NOT decide on tools before analyzing attachments
+
+This prevents:
+- Using wrong tools for extracted information (e.g., searching order numbers in product docs)
+- Missing critical information in attachments
+- Inefficient tool selection
+
+═══════════════════════════════════════════════════════════════════════
+📚 KNOWLEDGE SOURCES - WHAT INFORMATION IS AVAILABLE WHERE
+═══════════════════════════════════════════════════════════════════════
+
+1. **Gemini File Search (document_search_tool)** 📖
+   ✅ HAS: Product specification PDFs with technical diagrams
+   ✅ HAS: Parts diagrams showing product components and specific parts
+   ✅ HAS: Parts lists with part numbers and MSRP/pricing
+   ✅ HAS: Installation guides and manuals
+   ✅ HAS: Core policy documents:
+      - Warranty policy
+      - MAP (Minimum Advertised Price) agreement
+      - Training manuals
+      - Return/refund policies
+   ✅ HAS: Troubleshooting guides and FAQs
+   ❌ DOES NOT HAVE: Customer order data, purchase orders, invoices, shipping/tracking info
+   ❌ DOES NOT HAVE: Customer account information or order history
+   
+   ⚠️ CRITICAL: Order numbers from shipping labels are NOT product identifiers. 
+   Do not search order numbers in this tool - it will return irrelevant results.
+
+2. **Product Catalog (product_catalog_tool)** ⭐ COMPREHENSIVE DATABASE
+   - 5,687 products with FULL details (70 fields per product)
+   - Model numbers, group numbers, UPC codes
+   - ALL finish variations (29 finishes: Chrome, Matte Black, Brushed Nickel, etc.)
+   - Pricing (List Price, MAP Price)
+   - Specifications (dimensions, weight, flow rate, holes needed)
+   - Features and bullet points
+   - Direct links to spec sheets, install manuals, parts diagrams
+   - Video links (installation, operational, lifestyle)
+   - Categories: Showering, Bathing, Sink Faucets, Kitchen, Bath Accessories, Spare Parts
+   - Collections: Serie 100, Serie 196, Universal Fixtures, Cascade, etc.
+
+3. **Past Tickets (past_tickets_search_tool)**
+   - Similar resolved issues
+   - Common solutions and resolutions
+   - Customer communication patterns
+
+4. **Vision/OCR Tools**
+   - Product identification from images
+   - Text extraction from labels, invoices, documents
+
+═══════════════════════════════════════════════════════════════════════
+🎯 TICKET TYPE HANDLING - DIFFERENT APPROACHES FOR DIFFERENT QUERIES
+═══════════════════════════════════════════════════════════════════════
+
+**PRODUCT ISSUES** (defects, broken, warranty, replacement parts):
+  → Use vision/OCR to identify product
+  → Verify with product_search
+  → Find relevant docs and past tickets
+
+**PRICING/MSRP REQUESTS** (asking for price of parts):
+  → Use document_search_tool to find pricing information
+  → Search with part numbers directly
+  → NO need for product identification or vision
+
+**DEALER/PARTNERSHIP INQUIRIES** (becoming a dealer, open account):
+  → Use document_search_tool to find dealer program information
+  → Search for "dealer application", "partnership", "requirements"
+  → NO need for product identification
+  
+**INSTALLATION HELP**:
+  → Identify product first
+  → Use document_search for installation guides
+  
+**GENERAL INQUIRIES**:
+  → Use document_search with the query directly
+  → NO forced product identification
 
 ═══════════════════════════════════════════════════════════════════════
 📋 COMPLETE TOOL REGISTRY (You MUST use these tool names exactly)
@@ -47,22 +159,49 @@ Your goal: Gather ALL necessary information to help the customer by using availa
    - PARAM: action_input = {{"attachments": [...]}}
 
 3. **multimodal_document_analyzer_tool** [PRIORITY: 3]
-   - PURPOSE: Deep analysis of documents using vision + text (images within PDFs)
-   - USE WHEN: Documents have diagrams, charts, or complex visual layouts
-   - OUTPUT: Extracted text, images, tables, structural analysis
+   - PURPOSE: Intelligent document analysis with classification and data extraction
+   - USE FOR: PDFs, documents with diagrams, contracts, agreements, licenses
+   - DOCUMENT TYPES: invoice, spec_sheet, warranty_document, installation_manual,
+                     shipping_document, return_authorization, agreement,
+                     dealership_application, license, correspondence, catalog
+   - OUTPUT: Document type, confidence, extracted data, identifiers (model/part/order numbers)
    - PARAM: action_input = {{"attachments": [...]}}
 
 4. **ocr_image_analyzer_tool** [PRIORITY: 4]
-   - PURPOSE: Extract text from customer's uploaded images (photos, screenshots)
-   - USE WHEN: Customer sent photos of products, labels, or error messages
-   - OUTPUT: Extracted text, identified model numbers, error codes
+   - PURPOSE: Intelligent image analysis with classification and text extraction
+   - USE FOR: Customer photos of products, labels, receipts, packaging, damage
+   - IMAGE TYPES: product_label, packaging, purchase_receipt, installed_product,
+                  damaged_product, error_display, model_plate, general
+   - OUTPUT: Image type, confidence, extracted model numbers, visible text
    - PARAM: action_input = {{"image_urls": [...]}}
 
-5. **product_search_tool** [PRIORITY: 5⭐]
-   - PURPOSE: Find products by model number, name, or description
-   - CRITICAL: Always verify extracted model numbers with this tool
-   - OUTPUT: Product details, model info, category, specifications
-   - PARAM: action_input = {{"query": "search term"}} OR {{"model_number": "MODEL_NO"}}
+5. **product_catalog_tool** [PRIORITY: 5⭐⭐] ← COMPREHENSIVE PRODUCT DATABASE
+   - PURPOSE: Search 5,687 products with FULL details from the Flusso catalog
+   - USE WHEN: Need product info, verify model numbers, find pricing, check availability
+   
+   SEARCH CAPABILITIES:
+   • Exact model search: model_number="100.1170CP" → exact product
+   • Group search: model_number="100.1170" → ALL finish variations (CP, BN, MB, SB...)
+   • Fuzzy search: model_number="100.117" → suggests "100.1170" (typo correction)
+   • Keyword search: query="floor mount tub faucet chrome"
+   • Category filter: category="Bathing" or "Kitchen" or "Showering"
+   • Collection filter: collection="Serie 100" or "Universal Fixtures"
+   
+   DATA RETURNED:
+   • Product: model_no, title, category, sub_category, collection
+   • Finish: finish_code (CP, BN, MB), finish_name (Chrome, Brushed Nickel)
+   • Pricing: list_price, map_price
+   • Specs: dimensions, weight, flow_rate_gpm, holes_needed
+   • Resources: spec_sheet_url, install_manual_url, parts_diagram_url, install_video_url
+   • Features: bullet points describing product
+   • Variations: all available finishes for a product group
+   • Related: spare parts for the product
+   
+   FINISH CODES: CP=Chrome, BN=Brushed Nickel, PN=Polished Nickel, MB=Matte Black,
+                 SB=Satin Brass, BB=Brushed Bronze, GW=Gloss White, SS=Stainless Steel
+   
+   PARAM: action_input = {{"model_number": "100.1170"}} OR {{"query": "floor mount faucet"}}
+          Optional: category, collection, include_variations, limit
 
 6. **vision_search_tool** [PRIORITY: 6]
    - PURPOSE: Identify products from customer images using vision AI
@@ -71,8 +210,9 @@ Your goal: Gather ALL necessary information to help the customer by using availa
    - PARAM: action_input = {{"image_urls": [...]}}
 
 7. **document_search_tool** [PRIORITY: 7⭐]
-   - PURPOSE: Find installation guides, manuals, FAQs, technical docs
+   - PURPOSE: Find installation guides, manuals, FAQs, technical docs, PRICING, POLICIES
    - BEST USED AFTER: Product identified (use product context)
+   - ALSO: Use for pricing queries, dealer info, warranty policies
    - OUTPUT: Relevant documentation, snippets, installation steps
    - PARAM: action_input = {{"query": "search term", "product_context": "product_name"}}
 
@@ -100,37 +240,60 @@ Your goal: Gather ALL necessary information to help the customer by using availa
 🎯 OPTIMAL EXECUTION STRATEGY
 ═══════════════════════════════════════════════════════════════════════
 
+🔴 STEP 0 (MANDATORY IF ATTACHMENTS EXIST): ANALYZE ALL ATTACHMENTS FIRST
+  → If customer has PDFs: attachment_analyzer_tool OR multimodal_document_analyzer_tool
+  → If customer has images: ocr_image_analyzer_tool
+  → Extract: model numbers, part numbers, order numbers, purchase dates, product descriptions
+  → CRITICAL: Understand what information you have before selecting next tools
+
 IF ATTACHMENTS/IMAGES PRESENT:
-  1. attachment_analyzer_tool OR ocr_image_analyzer_tool (extract info)
-  2. product_search_tool (verify extracted model numbers)
-  3. [CRITICAL BRANCH]
-     - IF product_search finds a match: -> document_search_tool (using product name)
-     - IF product_search FAILS/LOW CONFIDENCE: -> document_search_tool (using extracted model # directly)
+  1. ✅ ANALYZE ALL ATTACHMENTS FIRST (attachment_analyzer_tool OR ocr_image_analyzer_tool)
+  2. Based on what you found:
+     - If found MODEL NUMBERS → product_catalog_tool (verify product)
+     - If found ORDER NUMBERS → DO NOT use document_search_tool (it has no order data)
+     - If found PART DESCRIPTIONS → document_search_tool with product context
+  3. product_catalog_tool or document_search_tool (based on findings)
   4. past_tickets_search_tool
   5. finish_tool
 
 IF TEXT-ONLY QUERY:
-  1. product_search_tool (search for product by description)
+  1. product_catalog_tool (search for product by description)
   2. document_search_tool (find relevant docs)
   3. past_tickets_search_tool (find similar cases)
   4. finish_tool
+  
+IF PRICING/INFORMATION REQUEST (no product ID needed):
+  1. document_search_tool (search for the specific info requested)
+  2. past_tickets_search_tool (find similar inquiries)
+  3. finish_tool
+
+IF DEALER/PARTNERSHIP INQUIRY:
+  1. document_search_tool (search for "dealer program", "partnership", "application")
+  2. finish_tool
 
 ═══════════════════════════════════════════════════════════════════════
 ⚠️ CRITICAL RULES (READ CAREFULLY!)
 ═══════════════════════════════════════════════════════════════════════
 
 ✅ DO:
+  - 🔴 ANALYZE ALL ATTACHMENTS FIRST before deciding on tools
+  - Understand what information each tool contains (see KNOWLEDGE SOURCES section)
   - Call tools in the optimal order
   - Use finish_tool when you've gathered sufficient information
-  - If product_search_tool returns low confidence or no match, ASSUME the model number is valid and proceed to document_search_tool.
-  - Pass product context to document_search for better results
+  - If product_catalog_tool returns low confidence or no match, ASSUME the model number is valid and proceed to document_search_tool
+  - Pass product context (MODEL NUMBERS) to document_search_tool for better results
   - Check iteration count - are you running out of time?
+  - For pricing/dealer/policy questions, go straight to document_search_tool
 
 ❌ DON'T:
-  - RETRY the same tool with the same input if it failed once.
-  - Get stuck trying to "verify" a product that isn't in the database.
-  - Ignore the "This search was already attempted" error message.
-  - Forget to call finish_tool (workflow won't complete!)
+  - ❌ Use document_search_tool with ORDER NUMBERS (it has no order data!)
+  - ❌ Decide which tools to use before analyzing attachments
+  - ❌ RETRY the same tool with the same input if it failed once
+  - ❌ Get stuck trying to "verify" a product that isn't in the database
+  - ❌ Ignore the "This search was already attempted" error message
+  - ❌ Forget to call finish_tool (workflow won't complete!)
+  - ❌ Force product identification for non-product queries (pricing, dealer inquiries)
+  - ❌ Confuse order numbers with product model numbers
 
 🛑 ITERATION LIMIT: {MAX_ITERATIONS} iterations
   - At iteration {MAX_ITERATIONS - 2}: You have ~2 iterations left, start finishing!
@@ -188,7 +351,8 @@ The downstream processors will use the data you collect to help the customer."""
 
 def react_agent_loop(state: TicketState) -> Dict[str, Any]:
     """
-    Main ReACT agent loop with IMPROVED stopping logic
+    Main ReACT agent loop with IMPROVED stopping logic.
+    Enhanced with Planning Module for better tool orchestration.
     """
     start_time = time.time()
     logger.info(f"{STEP_NAME} | ▶ Starting ReACT agent loop")
@@ -198,6 +362,60 @@ def react_agent_loop(state: TicketState) -> Dict[str, Any]:
     ticket_text = state.get("ticket_text", "")
     ticket_images = state.get("ticket_images", [])
     attachments = state.get("ticket_attachments", [])
+    
+    logger.info(f"{STEP_NAME} | Ticket #{ticket_id}: {len(ticket_text)} chars, {len(ticket_images)} images, {len(attachments)} attachments")
+    
+    # ========================================
+    # PHASE 1: PLANNING MODULE
+    # ========================================
+    execution_plan = None
+    plan_context = ""
+    current_plan_step = 0
+    planning_updates = {}
+    
+    # Run planner if enabled and available
+    planner_enabled = getattr(settings, 'enable_planner', True)
+    if PLANNER_AVAILABLE and planner_enabled:
+        logger.info(f"{STEP_NAME} | 🧠 Running execution planner...")
+        try:
+            execution_plan = create_execution_plan(state)
+            
+            if execution_plan and execution_plan.get("execution_plan"):
+                plan_context = get_plan_context_for_agent(execution_plan, current_plan_step)
+                
+                # Store planning results in state updates
+                planning_updates = {
+                    "execution_plan": execution_plan,
+                    "plan_steps": execution_plan.get("execution_plan", []),
+                    "current_plan_step": 0,
+                    "ticket_complexity": execution_plan.get("complexity", "moderate"),
+                    "planning_confidence": execution_plan.get("confidence", 0.5),
+                    "applicable_policy_type": execution_plan.get("policy_applicable", {}).get("policy_type"),
+                    "policy_requirements": execution_plan.get("policy_applicable", {}).get("requirements_from_policy", []),
+                    "can_proceed_per_policy": execution_plan.get("policy_applicable", {}).get("can_proceed", True),
+                    "missing_for_policy": execution_plan.get("policy_applicable", {}).get("missing_for_policy", []),
+                    "customer_need_analysis": execution_plan.get("analysis", {}).get("customer_need"),
+                    "help_type": execution_plan.get("analysis", {}).get("help_type"),
+                    "mentioned_product_model": execution_plan.get("analysis", {}).get("mentioned_product"),
+                }
+                
+                logger.info(f"{STEP_NAME} | ✅ Plan created: {len(execution_plan.get('execution_plan', []))} steps")
+                logger.info(f"{STEP_NAME} | Complexity: {execution_plan.get('complexity')}, Policy: {planning_updates.get('applicable_policy_type')}")
+            else:
+                logger.info(f"{STEP_NAME} | ⚠️ No plan generated, using default strategy")
+                
+        except Exception as e:
+            logger.error(f"{STEP_NAME} | ❌ Planning failed: {e}", exc_info=True)
+            # Continue without plan - agent will use default strategy
+    else:
+        if not PLANNER_AVAILABLE:
+            logger.info(f"{STEP_NAME} | Planner module not available")
+        elif not planner_enabled:
+            logger.info(f"{STEP_NAME} | Planner disabled in settings")
+    
+    # ========================================
+    # INITIALIZE AGENT STATE
+    # ========================================
     
     logger.info(f"{STEP_NAME} | Ticket #{ticket_id}: {len(ticket_text)} chars, {len(ticket_images)} images, {len(attachments)} attachments")
     
@@ -219,6 +437,10 @@ def react_agent_loop(state: TicketState) -> Dict[str, Any]:
     gathered_past_tickets = []
     product_confidence = 0.0
     gemini_answer = ""
+    
+    # Vision quality tracking (IMPORTANT for downstream confidence checks)
+    vision_match_quality = "NO_MATCH"  # Default
+    vision_relevance_reason = ""
     
     llm = get_llm_client()
     
@@ -276,6 +498,39 @@ def react_agent_loop(state: TicketState) -> Dict[str, Any]:
             iteration_num=iteration_num,
             max_iterations=MAX_ITERATIONS
         )
+        
+        # ========================================
+        # INJECT PLAN CONTEXT (Phase 1 Enhancement)
+        # ========================================
+        if plan_context and execution_plan:
+            # Update plan progress
+            updated_plan_context = get_plan_context_for_agent(execution_plan, current_plan_step)
+            
+            # Check if we should suggest next tool from plan
+            gathered_info = {
+                "product_identified": identified_product is not None,
+                "has_attachments": bool(attachments),
+                "has_images": bool(ticket_images)
+            }
+            plan_guidance = should_follow_plan_step(execution_plan, current_plan_step, gathered_info)
+            
+            # Add plan section to agent context
+            plan_section = f"""
+═══════════════════════════════════════════════════════════════════════
+📋 EXECUTION PLAN (from ticket analysis)
+═══════════════════════════════════════════════════════════════════════
+{updated_plan_context}
+
+PLAN GUIDANCE: {"Follow suggested tool: " + plan_guidance.get('suggested_tool', '') if plan_guidance.get('follow_plan') else plan_guidance.get('reason', 'Adapt as needed')}
+
+NOTE: You may deviate from the plan based on tool results. The plan is a guide, not a mandate.
+═══════════════════════════════════════════════════════════════════════
+"""
+            # Insert plan context after ticket info
+            agent_context = agent_context.replace(
+                "═══════════════════════════════════════════════════════════════════════\n📊 PREVIOUS ITERATIONS",
+                plan_section + "\n═══════════════════════════════════════════════════════════════════════\n📊 PREVIOUS ITERATIONS"
+            )
         
         try:
             iteration_start = time.time()
@@ -422,6 +677,11 @@ def react_agent_loop(state: TicketState) -> Dict[str, Any]:
                     if img_url and img_url not in gathered_images:
                         gathered_images.append(img_url)
                 
+                # IMPORTANT: Capture vision match quality for downstream nodes
+                vision_match_quality = tool_output.get("match_quality", "NO_MATCH")
+                vision_relevance_reason = tool_output.get("reasoning", "")
+                logger.info(f"{STEP_NAME} | 🖼️ Vision match quality: {vision_match_quality}")
+                
                 # Vision can also identify product
                 if matches and not identified_product:
                     top = matches[0]
@@ -475,6 +735,21 @@ def react_agent_loop(state: TicketState) -> Dict[str, Any]:
                 for ticket in tickets:
                     if ticket not in gathered_past_tickets:
                         gathered_past_tickets.append(ticket)
+            
+            # ========================================
+            # UPDATE PLAN STEP COUNTER (Phase 1)
+            # ========================================
+            if execution_plan and action != "finish_tool":
+                # Check if this action matches the current plan step
+                plan_steps = execution_plan.get("execution_plan", [])
+                if current_plan_step < len(plan_steps):
+                    expected_tool = plan_steps[current_plan_step].get("tool")
+                    if action == expected_tool or action.replace("_tool", "") in expected_tool:
+                        current_plan_step += 1
+                        logger.info(f"{STEP_NAME} | 📋 Plan progress: {current_plan_step}/{len(plan_steps)} steps")
+                    else:
+                        # Agent deviated from plan - log but don't increment
+                        logger.info(f"{STEP_NAME} | 📋 Agent deviated: expected {expected_tool}, got {action}")
             
             # Check if finished
             if action == "finish_tool" and tool_output.get("finished"):
@@ -544,13 +819,46 @@ def react_agent_loop(state: TicketState) -> Dict[str, Any]:
                 break
                 
         except Exception as e:
+            error_str = str(e).lower()
             logger.error(f"{STEP_NAME} | ❌ Error in iteration {iteration_num}: {e}", exc_info=True)
+            
+            # Classify the error type
+            if "rate" in error_str and "limit" in error_str:
+                error_type = "rate_limit"
+            elif "timeout" in error_str or "timed out" in error_str:
+                error_type = "timeout"
+            elif "quota" in error_str:
+                error_type = "quota_exceeded"
+            elif "api" in error_str or "connection" in error_str:
+                error_type = "api_error"
+            else:
+                error_type = "internal_error"
+            
+            # Store error info for downstream handling
+            workflow_error = str(e)
+            workflow_error_type = error_type
+            workflow_error_node = "react_agent"
+            is_system_error = True
+            
+            logger.error(f"{STEP_NAME} | Error type classified as: {error_type}")
             break
+    
+    # Initialize error tracking variables if not set
+    workflow_error = locals().get("workflow_error")
+    workflow_error_type = locals().get("workflow_error_type")
+    workflow_error_node = locals().get("workflow_error_node")
+    is_system_error = locals().get("is_system_error", False)
     
     total_duration = time.time() - start_time
     final_iteration_count = len(iterations)
     
-    status = "finished" if final_iteration_count < MAX_ITERATIONS else "max_iterations"
+    # Determine status
+    if is_system_error:
+        status = "error"
+    elif final_iteration_count < MAX_ITERATIONS:
+        status = "finished"
+    else:
+        status = "max_iterations"
     
     logger.info(f"\n{STEP_NAME} | ═══ REACT LOOP COMPLETE ═══")
     logger.info(f"{STEP_NAME} | Iterations: {final_iteration_count}/{MAX_ITERATIONS}")
@@ -558,6 +866,150 @@ def react_agent_loop(state: TicketState) -> Dict[str, Any]:
     logger.info(f"{STEP_NAME} | Duration: {total_duration:.2f}s")
     logger.info(f"{STEP_NAME} | Product: {identified_product is not None}")
     logger.info(f"{STEP_NAME} | Docs: {len(gathered_documents)}, Images: {len(gathered_images)}, Tickets: {len(gathered_past_tickets)}")
+    
+    # ========================================
+    # SYSTEM ERROR - SKIP ALL DOWNSTREAM PROCESSING
+    # ========================================
+    if is_system_error:
+        logger.error(f"{STEP_NAME} | 🚨 SYSTEM ERROR detected - skipping evidence analysis")
+        logger.error(f"{STEP_NAME} | Error: {workflow_error}")
+        logger.error(f"{STEP_NAME} | Type: {workflow_error_type}")
+        
+        # Return immediately with error state - don't run evidence analysis
+        audit_events = add_audit_event(
+            state,
+            event="react_agent_loop",
+            event_type="SYSTEM_ERROR",
+            details={
+                "iterations": final_iteration_count,
+                "status": status,
+                "duration_seconds": total_duration,
+                "workflow_error": workflow_error,
+                "workflow_error_type": workflow_error_type,
+                "workflow_error_node": workflow_error_node,
+            }
+        )["audit_events"]
+        
+        return {
+            "react_iterations": iterations,
+            "react_total_iterations": final_iteration_count,
+            "react_status": status,
+            "react_final_reasoning": f"System error: {workflow_error}",
+            "identified_product": identified_product,
+            "product_confidence": product_confidence,
+            "gathered_documents": gathered_documents,
+            "gathered_images": gathered_images,
+            "gathered_past_tickets": gathered_past_tickets,
+            "gemini_answer": gemini_answer,
+            "vision_match_quality": vision_match_quality,
+            "vision_relevance_reason": vision_relevance_reason,
+            # NO evidence analysis - system error
+            "evidence_analysis": {"resolution_action": "error", "final_confidence": 0},
+            "needs_more_info": False,  # NOT a "needs more info" situation - it's an ERROR
+            "info_request_response": None,
+            # Error tracking - this is what draft_response will check
+            "workflow_error": workflow_error,
+            "workflow_error_type": workflow_error_type,
+            "workflow_error_node": workflow_error_node,
+            "is_system_error": True,
+            "audit_events": audit_events
+        }
+    
+    # ========================================
+    # EVIDENCE ANALYSIS (Smart Conflict Resolution)
+    # Only run for categories that REQUIRE product identification
+    # ========================================
+    evidence_analysis = {}
+    needs_more_info = False
+    info_request_response = None
+    
+    # Import category groups to check if this ticket needs product identification
+    from app.config.constants import NON_PRODUCT_CATEGORIES
+    ticket_category = state.get("ticket_category", "general")
+    
+    # Skip evidence analysis for non-product categories (pricing, dealer inquiries, etc.)
+    skip_evidence_check = ticket_category in NON_PRODUCT_CATEGORIES
+    
+    if skip_evidence_check:
+        logger.info(f"{STEP_NAME} | 📋 Category '{ticket_category}' - skipping product evidence check (not product-related)")
+        evidence_analysis = {
+            "resolution_action": "proceed",
+            "final_confidence": 0.5,
+            "has_conflict": False,
+            "conflict_reason": None,
+            "evidence_summary": f"Category '{ticket_category}' does not require product identification",
+            "primary_product": None
+        }
+    elif EVIDENCE_RESOLVER_AVAILABLE:
+        logger.info(f"{STEP_NAME} | 🔍 Analyzing evidence for conflicts...")
+        
+        # Prepare evidence data from tool results
+        ocr_result = tool_results.get("ocr_image_analysis")
+        vision_result = tool_results.get("vision_search")
+        product_results = []
+        
+        # Collect all product search results from iterations
+        for iteration in iterations:
+            # Check both product_search_tool and product_catalog_tool
+            action = iteration.get("action", "")
+            if action in ["product_search_tool", "product_catalog_tool"]:
+                output = iteration.get("tool_output", {})
+                if output.get("success") and output.get("products"):
+                    # Get the source at top level (catalog_cache = exact match)
+                    source = output.get("source", "unknown")
+                    is_exact = source in ["catalog_cache", "exact", "group"]
+                    
+                    # Tag each product with the source info so evidence resolver can use it
+                    for product in output.get("products", []):
+                        product_with_source = product.copy()
+                        product_with_source["source"] = source
+                        product_with_source["exact_match"] = is_exact
+                        product_results.append(product_with_source)
+        
+        # Analyze evidence
+        evidence_bundle = analyze_evidence(
+            ocr_result=ocr_result,
+            vision_result=vision_result,
+            product_search_results=product_results,
+            document_results=gathered_documents,
+            past_ticket_results=gathered_past_tickets,
+            agent_identified_product=identified_product,  # Pass agent's product from finish_tool
+            agent_confidence=product_confidence  # Pass agent's confidence
+        )
+        
+        logger.info(f"{STEP_NAME} | 📊 Evidence analysis: action={evidence_bundle.resolution_action}, confidence={evidence_bundle.final_confidence:.0%}")
+        
+        # Check if we need more info from customer
+        if evidence_bundle.resolution_action in ["request_info", "escalate"]:
+            needs_more_info = True
+            requester_name = state.get("requester_name") or "there"
+            info_request_response = generate_info_request_response(
+                evidence_bundle,
+                customer_name=requester_name,
+                ticket_subject=state.get("ticket_subject", ""),
+                ticket_text=state.get("ticket_text", ""),
+                ticket_category=ticket_category
+            )
+            logger.info(f"{STEP_NAME} | 📝 Generated contextual info request for customer")
+        
+        elif evidence_bundle.resolution_action == "proceed_with_warning":
+            logger.info(f"{STEP_NAME} | ⚠️ Proceeding with warning: {evidence_bundle.conflict_reason}")
+        
+        # Store evidence analysis for downstream nodes
+        evidence_analysis = {
+            "resolution_action": evidence_bundle.resolution_action,
+            "final_confidence": evidence_bundle.final_confidence,
+            "has_conflict": evidence_bundle.has_conflict,
+            "conflict_reason": evidence_bundle.conflict_reason,
+            "evidence_summary": evidence_bundle.evidence_summary,
+            "primary_product": evidence_bundle.primary_product
+        }
+        
+        # If evidence resolver found a better product than what agent identified, use it
+        if evidence_bundle.primary_product and evidence_bundle.final_confidence > product_confidence:
+            logger.info(f"{STEP_NAME} | 🔄 Evidence resolver updated product to: {evidence_bundle.primary_product.get('model')}")
+            identified_product = evidence_bundle.primary_product
+            product_confidence = evidence_bundle.final_confidence
     
     if iterations:
         last_thought = iterations[-1]["thought"]
@@ -586,11 +1038,18 @@ def react_agent_loop(state: TicketState) -> Dict[str, Any]:
             "product_identified": identified_product is not None,
             "documents_found": len(gathered_documents),
             "images_found": len(gathered_images),
-            "tickets_found": len(gathered_past_tickets)
+            "tickets_found": len(gathered_past_tickets),
+            "plan_steps_completed": current_plan_step if execution_plan else 0,
+            "plan_total_steps": len(execution_plan.get("execution_plan", [])) if execution_plan else 0,
+            "ticket_complexity": planning_updates.get("ticket_complexity") if planning_updates else None,
+            "is_system_error": is_system_error,
+            "workflow_error": workflow_error,
+            "workflow_error_type": workflow_error_type
         }
     )["audit_events"]
     
-    return {
+    # Build final return with planning updates
+    result = {
         "react_iterations": iterations,
         "react_total_iterations": final_iteration_count,
         "react_status": status,
@@ -601,6 +1060,26 @@ def react_agent_loop(state: TicketState) -> Dict[str, Any]:
         "gathered_images": gathered_images,
         "gathered_past_tickets": gathered_past_tickets,
         "gemini_answer": gemini_answer,
+        # Vision match quality for downstream confidence/hallucination checks
+        "vision_match_quality": vision_match_quality,
+        "vision_relevance_reason": vision_relevance_reason,
+        # Evidence analysis results
+        "evidence_analysis": evidence_analysis,
+        "needs_more_info": needs_more_info,
+        "info_request_response": info_request_response,
+        # Error tracking (for proper handling in draft_response)
+        "workflow_error": workflow_error,
+        "workflow_error_type": workflow_error_type,
+        "workflow_error_node": workflow_error_node,
+        "is_system_error": is_system_error,
         **legacy_updates,
         "audit_events": audit_events
     }
+    
+    # Add planning module results if available
+    if planning_updates:
+        result.update(planning_updates)
+        # Update final plan step
+        result["current_plan_step"] = current_plan_step
+    
+    return result

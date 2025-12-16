@@ -162,9 +162,16 @@ class LLMClient:
             return response_text
             
         except Exception as e:
+            error_str = str(e).lower()
             logger.error(f"❌ Error calling LLM: {e}", exc_info=True)
             
-            # Return safe defaults
+            # For rate limit and quota errors, raise the exception so caller can handle it
+            # These are recoverable errors that the workflow should know about
+            if "429" in str(e) or "resource_exhausted" in error_str or "quota" in error_str or "rate" in error_str:
+                logger.error(f"🚨 Rate limit/quota error - raising exception for proper handling")
+                raise  # Re-raise to let caller handle rate limit appropriately
+            
+            # For other errors, return safe defaults (backward compatibility)
             if response_format == "json":
                 return {}
             return f"Error: {str(e)}"

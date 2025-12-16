@@ -15,8 +15,7 @@ from app.nodes.routing_agent import classify_ticket_category
 from app.nodes.react_agent import react_agent_loop  # NEW
 from app.nodes.customer_lookup import identify_customer_type
 from app.nodes.vip_rules import load_vip_rules
-from app.nodes.decisions.hallucination_guard import assess_hallucination_risk
-from app.nodes.decisions.confidence_check import evaluate_product_confidence
+# REMOVED: hallucination_guard and confidence_check (redundant - evidence_resolver handles this)
 from app.nodes.decisions.vip_compliance import verify_vip_compliance
 from app.nodes.response.draft_response import draft_final_response
 from app.nodes.response.resolution_logic import decide_tags_and_resolution
@@ -104,22 +103,9 @@ def route_after_routing(state: TicketState) -> Literal["skip_handler", "react_ag
 
 
 # ---------------------------------------------------------------------
-#  HALLUCINATION GUARD ROUTING (Still validate, but don't block)
+#  HALLUCINATION GUARD ROUTING - REMOVED
+#  Evidence resolver now handles confidence assessment
 # ---------------------------------------------------------------------
-def route_after_hallucination_guard(state: TicketState) -> Literal["confidence_check"]:
-    """
-    Always proceed to confidence check.
-    Hallucination risk is considered in resolution_logic.
-    """
-    from app.config.settings import settings
-    
-    risk = state.get("hallucination_risk", 0)
-    threshold = settings.hallucination_risk_threshold
-    
-    if risk > threshold:
-        logger.warning(f"[ROUTER] High hallucination risk ({risk:.2f}), but continuing to confidence check")
-    
-    return "confidence_check"
 
 
 # ---------------------------------------------------------------------
@@ -149,9 +135,8 @@ def build_react_graph() -> StateGraph:
     graph.add_node("customer_lookup", identify_customer_type)
     graph.add_node("vip_rules", load_vip_rules)
     
-    # Keep decision nodes for validation
-    graph.add_node("hallucination_guard", assess_hallucination_risk)
-    graph.add_node("confidence_check", evaluate_product_confidence)
+    # REMOVED: hallucination_guard and confidence_check
+    # Evidence resolver (in react_agent) now handles confidence assessment
     graph.add_node("vip_compliance", verify_vip_compliance)
     
     graph.add_node("draft_response", draft_final_response)
@@ -182,15 +167,16 @@ def build_react_graph() -> StateGraph:
     graph.add_edge("react_agent", "customer_lookup")
     graph.add_edge("customer_lookup", "vip_rules")
     
-    # After VIP rules → validation gates
-    graph.add_edge("vip_rules", "hallucination_guard")
-    graph.add_edge("hallucination_guard", "confidence_check")
-    graph.add_edge("confidence_check", "vip_compliance")
+    # After VIP rules → generate response (simplified flow)
+    # REMOVED: hallucination_guard and confidence_check edges
+    # Evidence resolver confidence is used directly
+    graph.add_edge("vip_rules", "draft_response")
     
-    # After validations → generate response
-    graph.add_edge("vip_compliance", "draft_response")
-    graph.add_edge("draft_response", "resolution_logic")
+    # After response generation → VIP compliance check
+    graph.add_edge("draft_response", "vip_compliance")
     
+    # VIP compliance → resolution logic
+    graph.add_edge("vip_compliance", "resolution_logic")
     # Final chain
     graph.add_edge("resolution_logic", "freshdesk_update")
     graph.add_edge("freshdesk_update", "audit_log")
