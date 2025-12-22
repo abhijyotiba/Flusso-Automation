@@ -77,5 +77,5 @@ python-dateutil>=2.9.0
 ##############################
 colorlog>=6.0.0
 diskcache>=5.0.0
-tqdm>=4.60.
+tqdm>=4.60
 pandas>=2.0.0,<3.0.0

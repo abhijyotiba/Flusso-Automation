@@ -402,13 +402,10 @@ Respond in this EXACT structured format (ALL sections are REQUIRED):
 * Confidence Level: [High/Medium/Low with brief reason]
 
 ## 💡 SUGGESTED ACTIONS (For Agent)
-[2-4 specific bullet points - these are REQUIRED]
+[1-3 specific bullet points - these are REQUIRED]
 - Action 1: [specific action]
 - Action 2: [specific action]
-- Action 3: [specific action]
 
-## 📝 SUGGESTED RESPONSE
-[The actual draft response to send to the customer. Should be friendly, professional, and actionable. Include greeting, acknowledgment, solution/next steps, and sign-off. Do NOT include sources here.]
 
 ---
 
