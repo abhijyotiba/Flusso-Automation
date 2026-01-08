@@ -14,6 +14,7 @@ from diskcache import Cache
 from app.graph.graph_builder_react import build_react_graph
 from app.graph.state import TicketState
 from app.utils.pii_masker import mask_email, mask_name
+from app.services.policy_service import init_policy_service
 
 # ---------------------------------------------------
 # LOGGING CONFIG
@@ -43,6 +44,10 @@ async def lifespan(app: FastAPI):
     # Initialize deduplication cache
     webhook_cache = Cache(".cache/webhook_dedup")
     logger.info("✅ Webhook deduplication cache initialized")
+
+    # Initialize policy service (fetches from Google Docs)
+    init_policy_service()
+    logger.info("✅ Policy service initialized and background sync started")
 
     graph = build_react_graph()
     logger.info("✅ LangGraph ReACT workflow initialized")
@@ -150,6 +155,20 @@ def _is_duplicate_webhook(key: str, ttl_seconds: int = 30) -> bool:
 # ---------------------------------------------------
 # MAIN WEBHOOK ENDPOINT
 # ---------------------------------------------------
+@app.get("/webhook")
+async def webhook_verification():
+    """
+    GET endpoint for webhook verification (Freshdesk validation).
+    Freshdesk sends GET requests to verify the endpoint before activation.
+    """
+    logger.info("✅ Webhook verification request received (GET)")
+    return {
+        "status": "webhook_ready",
+        "service": "Flusso Workflow Automation",
+        "accepts": "POST requests with ticket_id"
+    }
+
+
 @app.post("/webhook")
 async def freshdesk_webhook(request: Request):
     """
