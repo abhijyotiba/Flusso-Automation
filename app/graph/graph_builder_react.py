@@ -63,7 +63,7 @@ def skip_ticket_handler(state: TicketState) -> dict:
     
     if not private_note:
         note_map = {
-            "purchase_order": "📦 Purchase Order received. No response needed.",
+            "purchase_order": "📦 Purchase Order received. No Artificial Intelligence Response Generated",
             "auto_reply": "🤖 Auto-reply detected. No action needed.",
             "spam": "🚫 Spam detected. No action needed."
         }
