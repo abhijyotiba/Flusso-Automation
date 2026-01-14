@@ -6,7 +6,7 @@ Webhook endpoint for Freshdesk ticket automation using intelligent ReACT loop
 import logging
 import hashlib
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request, HTTPException, Response
+from fastapi import FastAPI, Request, HTTPException, Response, BackgroundTasks
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from diskcache import Cache
@@ -153,6 +153,38 @@ def _is_duplicate_webhook(key: str, ttl_seconds: int = 30) -> bool:
 
 
 # ---------------------------------------------------
+# BACKGROUND PROCESSING FUNCTION
+# ---------------------------------------------------
+def process_ticket_workflow(ticket_id: str, initial_state: dict):
+    """
+    Process ticket workflow in the background.
+    This runs asynchronously after responding to Freshdesk.
+    """
+    try:
+        logger.info(f"🎫 Background processing started for ticket #{ticket_id}")
+        
+        # Run the ReACT workflow
+        final_state = graph.invoke(initial_state)
+        
+        # Extract key results
+        resolution = final_state.get("resolution_decision", "unknown")
+        react_iterations = final_state.get("react_total_iterations", 0)
+        react_status = final_state.get("react_status", "unknown")
+        product_identified = final_state.get("identified_product") is not None
+        
+        # Log PII-masked summary
+        requester = final_state.get("requester_email", "")
+        masked_email = mask_email(requester) if requester else "N/A"
+        logger.info(
+            f"✅ Ticket #{ticket_id} completed: {resolution} | "
+            f"ReACT: {react_iterations} iterations | Requester: {masked_email}"
+        )
+        
+    except Exception as e:
+        logger.error(f"❌ Background processing error for ticket #{ticket_id}: {e}", exc_info=True)
+
+
+# ---------------------------------------------------
 # MAIN WEBHOOK ENDPOINT
 # ---------------------------------------------------
 @app.get("/webhook")
@@ -170,10 +202,10 @@ async def webhook_verification():
 
 
 @app.post("/webhook")
-async def freshdesk_webhook(request: Request):
+async def freshdesk_webhook(request: Request, background_tasks: BackgroundTasks):
     """
     Main webhook endpoint for Freshdesk ticket events.
-    Uses ReACT agent for intelligent information gathering.
+    Responds immediately and processes ticket in background.
     """
     global graph
 
@@ -219,8 +251,6 @@ async def freshdesk_webhook(request: Request):
                 content={"status": "skipped", "reason": "duplicate_webhook", "ticket_id": ticket_id}
             )
 
-        logger.info(f"🎫 Processing ticket #{ticket_id} with ReACT agent...")
-
         # Initialize state
         initial_state: TicketState = {
             "ticket_id": ticket_id,
@@ -234,49 +264,20 @@ async def freshdesk_webhook(request: Request):
             "gathered_past_tickets": [],
         }
 
-        # Run the ReACT workflow
-        try:
-            import asyncio
-            final_state = await asyncio.wait_for(
-                asyncio.to_thread(graph.invoke, initial_state),
-                timeout=WORKFLOW_TIMEOUT
-            )
-        except asyncio.TimeoutError:
-            logger.error(f"⏰ Workflow timeout after {WORKFLOW_TIMEOUT}s for ticket #{ticket_id}")
-            return JSONResponse(
-                status_code=504,
-                content={
-                    "status": "timeout",
-                    "ticket_id": ticket_id,
-                    "timeout_seconds": WORKFLOW_TIMEOUT
-                }
-            )
-
-        # Extract key results
-        resolution = final_state.get("resolution_decision", "unknown")
-        react_iterations = final_state.get("react_total_iterations", 0)
-        react_status = final_state.get("react_status", "unknown")
-        product_identified = final_state.get("identified_product") is not None
+        # Add workflow processing to background tasks
+        background_tasks.add_task(process_ticket_workflow, ticket_id, initial_state)
         
-        response_data = {
-            "status": "success",
-            "ticket_id": ticket_id,
-            "resolution": resolution,
-            "mode": "react_agent",
-            "react_iterations": react_iterations,
-            "react_status": react_status,
-            "product_identified": product_identified,
-            "documents_found": len(final_state.get("gathered_documents", [])),
-            "images_found": len(final_state.get("gathered_images", [])),
-            "past_tickets_found": len(final_state.get("gathered_past_tickets", [])),
-        }
-
-        # Log PII-masked summary
-        requester = final_state.get("requester_email", "")
-        masked_email = mask_email(requester) if requester else "N/A"
-        logger.info(f"✅ Ticket #{ticket_id} processed: {resolution} | ReACT: {react_iterations} iterations | Requester: {masked_email}")
-
-        return JSONResponse(status_code=200, content=response_data)
+        logger.info(f"✅ Ticket #{ticket_id} queued for processing")
+        
+        # Return immediately to Freshdesk
+        return JSONResponse(
+            status_code=200,
+            content={
+                "status": "accepted",
+                "message": "Request successfully received",
+                "ticket_id": ticket_id
+            }
+        )
 
     except Exception as e:
         logger.error(f"❌ Webhook processing error: {e}", exc_info=True)
