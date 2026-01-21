@@ -17,6 +17,7 @@ from app.config.constants import DRAFT_RESPONSE_PROMPT, ENHANCED_DRAFT_RESPONSE_
 from app.utils.detailed_logger import (
     log_node_start, log_node_complete, log_llm_interaction
 )
+from app.services.resource_links_service import get_resource_links_for_response
 
 logger = logging.getLogger(__name__)
 STEP_NAME = "1️⃣4️⃣ DRAFT_RESPONSE"
@@ -452,6 +453,10 @@ def draft_final_response(state: TicketState) -> Dict[str, Any]:
     source_tickets = state.get("source_tickets", []) or []
     gemini_answer = state.get("gemini_answer", "") or ""
     
+    # === Identified product for resource links ===
+    identified_product = state.get("identified_product", None)
+    product_confidence_for_links = state.get("product_confidence", 0.0) or confidence
+    
     node_log.input_summary = {
         "subject": subject[:100],
         "ticket_text_length": len(ticket_text),
@@ -654,8 +659,22 @@ RETRIEVED CONTEXT:
 </div>
 
 """
-        # Combine: confidence header + response + sources
-        response_with_confidence = confidence_header + html_response + sources_html + build_agent_console_section()
+        # === Build resource links section (only if product identified with high confidence) ===
+        resource_links_html = ""
+        try:
+            resource_links_html = get_resource_links_for_response(
+                identified_product=identified_product,
+                product_confidence=product_confidence_for_links
+            )
+            if resource_links_html:
+                logger.info(f"{STEP_NAME} | 📎 Added resource links for identified product")
+        except Exception as e:
+            logger.warning(f"{STEP_NAME} | ⚠️ Failed to get resource links: {e}")
+            resource_links_html = ""
+        
+        # Combine: confidence header + response + resource links + sources + agent console
+        # Resource links appear below suggested response, above sources
+        response_with_confidence = confidence_header + html_response + resource_links_html + sources_html + build_agent_console_section()
 
         duration = time.time() - start_time
         logger.info(f"{STEP_NAME} | ✅ Generated response ({len(response_text)} chars) in {duration:.2f}s")
@@ -678,7 +697,9 @@ RETRIEVED CONTEXT:
                 "duration_seconds": duration,
                 "source_documents_count": len(source_documents),
                 "source_products_count": len(source_products),
-                "source_tickets_count": len(source_tickets)
+                "source_tickets_count": len(source_tickets),
+                "resource_links_added": bool(resource_links_html),
+                "identified_product_model": identified_product.get("model") if identified_product else None
             },
             llm_response=response_text
         )

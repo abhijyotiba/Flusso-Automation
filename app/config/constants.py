@@ -419,7 +419,7 @@ Respond in this EXACT structured format (ALL sections are REQUIRED):
 Template:
 Hi [Name],
 
-[1-2 sentences addressing their request directly]
+[1-2 sentences in bullet point addressing their request directly]
 
 [1 sentence with next steps if needed]
 
