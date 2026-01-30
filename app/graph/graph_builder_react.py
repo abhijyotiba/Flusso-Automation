@@ -1,6 +1,6 @@
 """
 LangGraph Builder with ReACT Agent
-Simplified workflow: Fetch → Routing → ReACT Agent → Response → Update
+Simplified workflow: Fetch → Ticket Extractor → Routing → ReACT Agent → Response → Update
 """
 
 import logging
@@ -11,6 +11,7 @@ from app.graph.state import TicketState
 
 # Import nodes
 from app.nodes.fetch_ticket import fetch_ticket_from_freshdesk
+from app.nodes.ticket_extractor import extract_ticket_facts  # NEW: Ticket facts extraction
 from app.nodes.routing_agent import classify_ticket_category
 from app.nodes.react_agent import react_agent_loop  # NEW
 from app.nodes.customer_lookup import identify_customer_type
@@ -116,7 +117,7 @@ def build_react_graph() -> StateGraph:
     Build LangGraph workflow with ReACT agent.
     
     Simplified flow:
-    fetch_ticket → routing → [skip_handler OR react_agent] → 
+    fetch_ticket → ticket_extractor → routing → [skip_handler OR react_agent] → 
     customer_lookup → vip_rules → decisions → draft_response → 
     resolution_logic → freshdesk_update → audit_log
     """
@@ -126,6 +127,10 @@ def build_react_graph() -> StateGraph:
     
     # ------------------- ADD NODES -------------------
     graph.add_node("fetch_ticket", fetch_ticket_from_freshdesk)
+    
+    # NEW: Ticket Facts Extractor (deterministic extraction before planning)
+    graph.add_node("ticket_extractor", extract_ticket_facts)
+    
     graph.add_node("routing", classify_ticket_category)
     graph.add_node("skip_handler", skip_ticket_handler)
     
@@ -148,7 +153,9 @@ def build_react_graph() -> StateGraph:
     graph.set_entry_point("fetch_ticket")
     
     # ------------------- BASE FLOW -------------------
-    graph.add_edge("fetch_ticket", "routing")
+    # NEW: fetch_ticket → ticket_extractor → routing
+    graph.add_edge("fetch_ticket", "ticket_extractor")
+    graph.add_edge("ticket_extractor", "routing")
     
     # Route to skip or react agent
     graph.add_conditional_edges(

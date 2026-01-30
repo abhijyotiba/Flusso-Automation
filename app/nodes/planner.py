@@ -2,6 +2,7 @@
 Ticket Analysis & Planning Module
 Analyzes ticket and creates structured execution plan BEFORE tool calls.
 Integrates with policy service for policy-aware planning.
+Now also VERIFIES ticket_facts from ticket_extractor node.
 """
 
 import logging
@@ -13,6 +14,7 @@ from app.clients.llm_client import get_llm_client
 from app.services.policy_service import get_relevant_policy, get_policy_for_category
 from app.config.settings import settings
 from app.utils.audit import add_audit_event
+from app.nodes.ticket_extractor import update_ticket_facts, get_model_candidates_from_facts
 
 logger = logging.getLogger(__name__)
 STEP_NAME = "🧠 PLANNER"
@@ -37,6 +39,16 @@ Category: {category}
 Has Images: {has_images} ({image_count} images)
 Has Attachments: {has_attachments} ({attachment_count} attachments)
 Attachment Types: {attachment_types}
+
+═══════════════════════════════════════════════════════════════════════
+� PRE-EXTRACTED TICKET FACTS (from intake extractor)
+═══════════════════════════════════════════════════════════════════════
+{ticket_facts_summary}
+
+NOTE: These facts are HINTS from deterministic extraction. Use them to optimize your plan.
+- If product codes are already extracted, you may skip blind vision search
+- If receipt/PO presence detected, prioritize attachment analysis
+- Model candidates should be verified with product_search_tool
 
 ═══════════════════════════════════════════════════════════════════════
 📜 RELEVANT COMPANY POLICY
@@ -77,12 +89,13 @@ Policy Requirements for this type of request:
 Analyze this ticket and create a structured plan. Consider:
 
 1. WHAT does the customer need? (warranty claim, return, parts, help, info?)
-2. WHAT product are they asking about? (model number mentioned?)
+2. WHAT product are they asking about? (check ticket_facts for extracted models!)
 3. WHAT documents/proof do they need per policy? (receipt, photos?)
 4. WHAT tools should we use and in what ORDER?
 
 IMPORTANT RULES:
 - If policy requires proof of purchase → check attachments FIRST
+- If ticket_facts has product_codes → verify with product_search (skip blind vision!)
 - If customer mentions model number → verify with product_search
 - If customer has images but no model → try OCR first, then vision
 - Always include document_search for troubleshooting/installation tickets
@@ -131,6 +144,77 @@ Respond ONLY with valid JSON in this exact format:
 # ===============================
 # HELPER FUNCTIONS
 # ===============================
+def _format_ticket_facts_for_planner(state: TicketState) -> str:
+    """Format ticket_facts into a summary string for the planner prompt."""
+    ticket_facts = state.get("ticket_facts", {})
+    
+    if not ticket_facts:
+        return "No pre-extracted facts available."
+    
+    lines = []
+    
+    # Presence flags
+    presence_items = []
+    if ticket_facts.get("has_address"):
+        presence_items.append("✓ Address mentioned")
+    if ticket_facts.get("has_receipt"):
+        presence_items.append("✓ Receipt/invoice keywords found")
+    if ticket_facts.get("has_po"):
+        presence_items.append("✓ PO/order number mentioned")
+    if ticket_facts.get("has_photos"):
+        presence_items.append("✓ Photos attached")
+    if ticket_facts.get("has_video"):
+        presence_items.append("✓ Video attached")
+    if ticket_facts.get("has_document_attachments"):
+        presence_items.append("✓ Document attachments present")
+    
+    if presence_items:
+        lines.append("Presence Flags:")
+        for item in presence_items:
+            lines.append(f"  {item}")
+        lines.append("")
+    
+    # Product codes
+    raw_codes = ticket_facts.get("raw_product_codes", [])
+    if raw_codes:
+        lines.append("Product Codes Extracted:")
+        for code in raw_codes[:5]:  # Limit to 5
+            model = code.get("model", "N/A")
+            finish_code = code.get("finish_code")
+            finish_name = code.get("finish_name")
+            if finish_code:
+                lines.append(f"  • {model} (finish: {finish_code} = {finish_name})")
+            else:
+                lines.append(f"  • {model}")
+        lines.append("")
+    
+    # Part numbers
+    part_numbers = ticket_facts.get("raw_part_numbers", [])
+    if part_numbers:
+        lines.append(f"Part Numbers: {', '.join(part_numbers[:3])}")
+        lines.append("")
+    
+    # Finish mentions
+    finish_mentions = ticket_facts.get("raw_finish_mentions", [])
+    if finish_mentions:
+        lines.append(f"Finish Preferences Mentioned: {', '.join(finish_mentions[:3])}")
+        lines.append("")
+    
+    # Address
+    if ticket_facts.get("extracted_address"):
+        confidence = ticket_facts.get("address_confidence", 0)
+        lines.append(f"Address Extracted: {ticket_facts['extracted_address'][:50]}...")
+        lines.append(f"  Confidence: {confidence:.0%}")
+        if ticket_facts.get("address_needs_confirmation"):
+            lines.append("  ⚠️ May need confirmation from customer")
+        lines.append("")
+    
+    if not lines:
+        return "Deterministic extraction found no significant data."
+    
+    return "\n".join(lines)
+
+
 def _extract_model_numbers(text: str) -> List[str]:
     """Extract potential model numbers from text."""
     import re
@@ -316,6 +400,208 @@ def _build_default_plan(state: TicketState, policy_type: str) -> Dict[str, Any]:
 
 
 # ===============================
+# TICKET_FACTS VERIFICATION
+# ===============================
+VERIFY_FACTS_PROMPT = """You are verifying product model numbers extracted from a customer support ticket.
+
+The ticket extractor found these potential product codes using regex patterns.
+Your job is to verify which ones are REAL Flusso Kitchen & Bath product model numbers.
+
+═══════════════════════════════════════════════════════════════════════
+📋 TICKET CONTENT
+═══════════════════════════════════════════════════════════════════════
+Subject: {subject}
+Description: {text}
+
+═══════════════════════════════════════════════════════════════════════
+📦 EXTRACTED PRODUCT CODES (from regex)
+═══════════════════════════════════════════════════════════════════════
+{extracted_codes}
+
+═══════════════════════════════════════════════════════════════════════
+🎨 FINISH CODE REFERENCE
+═══════════════════════════════════════════════════════════════════════
+2-letter finish codes: CP=Chrome, BN=Brushed Nickel, PN=Polished Nickel, 
+MB=Matte Black, SB=Satin Brass, BB=Brushed Bronze, GM=Gunmetal, 
+SS=Stainless Steel, GD=Gold
+
+═══════════════════════════════════════════════════════════════════════
+📝 YOUR TASK
+═══════════════════════════════════════════════════════════════════════
+
+1. VERIFY each extracted code - is it likely a real product model?
+   - Product codes typically follow patterns like: 100.1170CP, PBV1005A, TRM.TVH.0211BB
+   - NOT dates, phone numbers, order numbers, or random text
+
+2. CORRECT any parsing errors:
+   - If finish code was incorrectly split or missed
+   - If model number was truncated or extended
+
+3. ADD any model numbers the regex MISSED in the ticket text
+
+4. NOTE any finish preferences mentioned in text (even without codes)
+
+Respond ONLY with valid JSON:
+{{
+    "verified_models": [
+        {{"model": "100.1170", "finish_code": "CP", "finish_name": "Chrome", "confidence": 0.95, "source": "ticket_text"}},
+        ...
+    ],
+    "rejected_codes": [
+        {{"code": "1234-5678", "reason": "Looks like order number, not product model"}}
+    ],
+    "corrections": [
+        {{"original": "100.1170C", "corrected": "100.1170CP", "reason": "Added missing P to Chrome finish"}}
+    ],
+    "finish_preferences": ["Customer mentioned they want Matte Black finish"],
+    "missing_models": ["PBV2105 - mentioned in text but not extracted"],
+    "overall_confidence": 0.85,
+    "notes": "Brief notes on findings"
+}}
+"""
+
+
+def verify_ticket_facts(state: TicketState) -> Dict[str, Any]:
+    """
+    Use LLM to verify and enhance the raw extractions from ticket_extractor.
+    
+    This function:
+    1. Takes raw_product_codes from ticket_facts
+    2. Verifies them with LLM (are they real product models?)
+    3. Corrects any parsing errors
+    4. Adds missed model numbers
+    5. Updates ticket_facts with verified info
+    
+    Args:
+        state: Current ticket state (with ticket_facts from extractor)
+        
+    Returns:
+        Dict with updated ticket_facts
+    """
+    ticket_facts = state.get("ticket_facts", {})
+    
+    if not ticket_facts:
+        logger.warning(f"{STEP_NAME} | No ticket_facts to verify")
+        return {}
+    
+    # Check if already verified
+    if ticket_facts.get("planner_verified"):
+        logger.info(f"{STEP_NAME} | ticket_facts already verified, skipping")
+        return {}
+    
+    raw_codes = ticket_facts.get("raw_product_codes", [])
+    
+    # If no raw codes, nothing to verify (but mark as verified)
+    if not raw_codes:
+        logger.info(f"{STEP_NAME} | No raw product codes to verify")
+        updated_facts = update_ticket_facts(
+            ticket_facts,
+            {
+                "planner_verified": True,
+                "planner_verified_models": [],
+                "planner_verified_finishes": [],
+                "planner_corrections": {}
+            },
+            updated_by="planner"
+        )
+        return {"ticket_facts": updated_facts}
+    
+    # Build prompt for verification
+    subject = state.get("ticket_subject", "") or ""
+    text = state.get("ticket_text", "") or ""
+    
+    extracted_codes_str = "\n".join([
+        f"  - Full SKU: {c.get('full_sku', 'N/A')}, Model: {c.get('model', 'N/A')}, "
+        f"Finish Code: {c.get('finish_code', 'None')}, Finish Name: {c.get('finish_name', 'None')}"
+        for c in raw_codes
+    ])
+    
+    prompt = VERIFY_FACTS_PROMPT.format(
+        subject=subject,
+        text=text[:2000],  # Limit text
+        extracted_codes=extracted_codes_str or "  (No codes extracted)"
+    )
+    
+    try:
+        llm = get_llm_client()
+        
+        logger.info(f"{STEP_NAME} | 🔄 Verifying {len(raw_codes)} extracted product codes...")
+        
+        response = llm.call_llm(
+            system_prompt="You are a product code verification expert. Respond only with valid JSON.",
+            user_prompt=prompt,
+            response_format="json",
+            temperature=0.1,
+            max_tokens=2048
+        )
+        
+        if not isinstance(response, dict):
+            logger.warning(f"{STEP_NAME} | Invalid verification response")
+            response = {}
+        
+        # Extract verified models
+        verified_models = response.get("verified_models", [])
+        verified_model_numbers = [m.get("model") for m in verified_models if m.get("model")]
+        verified_finishes = [m.get("finish_code") for m in verified_models if m.get("finish_code")]
+        
+        # Include corrections
+        corrections = {
+            c.get("original"): c.get("corrected")
+            for c in response.get("corrections", [])
+            if c.get("original") and c.get("corrected")
+        }
+        
+        # Include any missed models
+        missed_models = response.get("missing_models", [])
+        for missed in missed_models:
+            if isinstance(missed, str) and missed not in verified_model_numbers:
+                # Extract just the model number from "PBV2105 - mentioned in text"
+                model_part = missed.split(" - ")[0].split(" ")[0].strip()
+                if model_part:
+                    verified_model_numbers.append(model_part)
+        
+        # Update ticket_facts
+        updated_facts = update_ticket_facts(
+            ticket_facts,
+            {
+                "planner_verified": True,
+                "planner_verified_models": verified_model_numbers,
+                "planner_verified_finishes": list(set(verified_finishes)),
+                "planner_corrections": corrections,
+                "planner_finish_preferences": response.get("finish_preferences", []),
+                "planner_verification_confidence": response.get("overall_confidence", 0.5),
+                "planner_notes": response.get("notes", "")
+            },
+            updated_by="planner"
+        )
+        
+        logger.info(f"{STEP_NAME} | ✅ Verified models: {verified_model_numbers}")
+        if verified_finishes:
+            logger.info(f"{STEP_NAME} | ✅ Verified finishes: {verified_finishes}")
+        if corrections:
+            logger.info(f"{STEP_NAME} | ✏️ Corrections: {corrections}")
+        
+        return {"ticket_facts": updated_facts}
+        
+    except Exception as e:
+        logger.error(f"{STEP_NAME} | ❌ Verification error: {e}", exc_info=True)
+        
+        # Mark as verified with raw data on error
+        updated_facts = update_ticket_facts(
+            ticket_facts,
+            {
+                "planner_verified": True,
+                "planner_verified_models": [c.get("model") for c in raw_codes if c.get("model")],
+                "planner_verified_finishes": [c.get("finish_code") for c in raw_codes if c.get("finish_code")],
+                "planner_corrections": {},
+                "planner_verification_error": str(e)
+            },
+            updated_by="planner"
+        )
+        return {"ticket_facts": updated_facts}
+
+
+# ===============================
 # MAIN PLANNING FUNCTION
 # ===============================
 def create_execution_plan(state: TicketState) -> Dict[str, Any]:
@@ -374,7 +660,11 @@ def create_execution_plan(state: TicketState) -> Dict[str, Any]:
     logger.info(f"{STEP_NAME} | Policy section: {policy_result.get('primary_section_name', 'N/A')}")
     logger.info(f"{STEP_NAME} | Policy requirements: {policy_requirements}")
     
-    # Step 3: Build prompt
+    # Step 3: Format ticket_facts summary for prompt
+    ticket_facts_summary = _format_ticket_facts_for_planner(state)
+    logger.info(f"{STEP_NAME} | Ticket facts available: {bool(state.get('ticket_facts'))}")
+    
+    # Step 4: Build prompt
     prompt = PLANNING_PROMPT.format(
         subject=subject,
         text=text[:1500],  # Limit text length
@@ -384,11 +674,12 @@ def create_execution_plan(state: TicketState) -> Dict[str, Any]:
         has_attachments="Yes" if attachments else "No",
         attachment_count=len(attachments),
         attachment_types=_get_attachment_types(attachments),
+        ticket_facts_summary=ticket_facts_summary,
         policy_section=policy_section or "No specific policy found",
         policy_requirements="\n".join(f"- {req}" for req in policy_requirements) if policy_requirements else "No specific requirements"
     )
     
-    # Step 4: Call LLM for planning
+    # Step 5: Call LLM for planning
     try:
         llm = get_llm_client()
         

@@ -75,6 +75,55 @@ class TicketState(TypedDict, total=False):
     product_match_reasoning: str
     
     # ==========================================
+    # TICKET FACTS (from ticket_extractor node)
+    # Mutable record of what's known about the ticket
+    # ==========================================
+    ticket_facts: Optional[Dict[str, Any]]
+    # Structure:
+    # {
+    #   --- TIER 1: DETERMINISTIC (set by ticket_extractor) ---
+    #   "has_address": bool,              # Address keywords detected
+    #   "has_receipt": bool,              # Receipt/invoice keywords detected
+    #   "has_po": bool,                   # PO number keywords detected
+    #   "has_video": bool,                # Video attachment present
+    #   "has_photos": bool,               # Image attachments present
+    #   "has_document_attachments": bool, # Non-image attachments present
+    #   "customer_name": str,             # From Freshdesk
+    #   "requester_email": str,           # From Freshdesk
+    #   "extracted_address": str | None,  # Regex-extracted address
+    #   "address_confidence": float,      # 0.0-1.0
+    #   "raw_product_codes": List[{       # Product codes found in text
+    #       "full_sku": str,              # e.g., "TRM.TVH.0211BB"
+    #       "model": str,                 # e.g., "TRM.TVH.0211"
+    #       "finish_code": str | None,    # e.g., "BB"
+    #       "finish_name": str | None     # e.g., "Brushed Bronze PVD"
+    #   }],
+    #   "raw_part_numbers": List[str],    # Part numbers found
+    #   "raw_finish_mentions": List[str], # Finish names mentioned in text
+    #
+    #   --- TIER 2: LLM-VERIFIED (set by planner) ---
+    #   "planner_verified": bool,
+    #   "planner_verified_models": List[str],
+    #   "planner_verified_finishes": List[str],
+    #   "planner_corrections": Dict,
+    #
+    #   --- TIER 3: TOOL-CONFIRMED (set by react_agent) ---
+    #   "confirmed_model": str | None,
+    #   "confirmed_model_source": str | None,  # "catalog", "ocr", "vision", "text"
+    #   "confirmed_model_confidence": float,
+    #   "confirmed_finish": str | None,
+    #   "confirmed_finish_name": str | None,
+    #   "confirmed_parts": List[str],
+    #
+    #   --- METADATA ---
+    #   "extraction_version": str,
+    #   "extracted_at": float,
+    #   "last_updated_at": float,
+    #   "last_updated_by": str,
+    #   "update_history": List[Dict]
+    # }
+    
+    # ==========================================
     # ATTACHMENT INFO
     # ==========================================
     attachment_summary: List[Dict[str, Any]]  # List of processed attachments with metadata

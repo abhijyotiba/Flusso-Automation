@@ -62,17 +62,22 @@ def analyze_evidence(
     document_results: Optional[List[Dict[str, Any]]] = None,
     past_ticket_results: Optional[List[Dict[str, Any]]] = None,
     catalog_lookup_func = None,
-    agent_identified_product: Optional[Dict[str, Any]] = None,  # NEW: Product from finish_tool
-    agent_confidence: float = 0.0  # NEW: Agent's confidence in product identification
+    agent_identified_product: Optional[Dict[str, Any]] = None,
+    agent_confidence: float = 0.0,
+    ticket_facts: Optional[Dict[str, Any]] = None  # NEW: Pre-extracted ticket facts
 ) -> EvidenceBundle:
     """
     Analyze all evidence sources and determine best product identification.
     
+    NOW INCLUDES ticket_facts as an evidence source to prevent the "Split Brain" problem
+    where the agent knows info exists but evidence_resolver doesn't.
+    
     Priority order:
     1. OCR exact match (explicit text, highest trust)
-    2. Vision HIGH + corroborating evidence
-    3. Vision HIGH alone (proceed with caution flag)
-    4. Vision MEDIUM + corroborating evidence
+    2. ticket_facts verified models (from planner verification)
+    3. Vision HIGH + corroborating evidence
+    4. Vision HIGH alone (proceed with caution flag)
+    5. Vision MEDIUM + corroborating evidence
     5. Exact catalog match from product search
     6. If none of above → request more information
     
@@ -99,6 +104,57 @@ def analyze_evidence(
             )
             evidence_items.append(item)
             logger.info(f"{STEP_NAME} | OCR found model: {model}")
+    
+    # 1.5. NEW: Process ticket_facts (pre-extracted from ticket text)
+    # This closes the "Split Brain" gap - evidence_resolver now knows what ticket_extractor found
+    ticket_facts_models = []
+    if ticket_facts:
+        raw_codes = ticket_facts.get("raw_product_codes", [])
+        # NOTE: Key is planner_verified_models, not verified_models!
+        verified_models = ticket_facts.get("planner_verified_models", [])
+        
+        # Use verified_models if available (planner-verified), else use raw codes
+        # verified_models is List[str], raw_codes is List[dict]
+        models_to_use = verified_models if verified_models else raw_codes
+        
+        for model_code in models_to_use:
+            # Handle both dict format (from ticket_extractor) and string format
+            if isinstance(model_code, dict):
+                model_str = model_code.get("model") or model_code.get("full_sku", "")
+                finish_code = model_code.get("finish_code")
+                finish_name = model_code.get("finish_name")
+            else:
+                model_str = str(model_code)
+                finish_code = None
+                finish_name = None
+            
+            if not model_str:
+                continue
+                
+            item = EvidenceItem(
+                source="ticket_facts",
+                product_model=model_str,
+                product_name=None,
+                product_category=None,
+                confidence=0.85 if verified_models else 0.75,  # Higher if planner verified
+                raw_data={
+                    "source": "ticket_text", 
+                    "verified": bool(verified_models),
+                    "finish_code": finish_code,
+                    "finish_name": finish_name
+                },
+                is_exact_match=True  # Customer explicitly mentioned this
+            )
+            evidence_items.append(item)
+            ticket_facts_models.append(model_str)
+            logger.info(f"{STEP_NAME} | Ticket facts model: {model_str} (verified={bool(verified_models)}, finish={finish_code})")
+        
+        # Log presence indicators
+        has_model = ticket_facts.get("has_model_number", False)
+        has_receipt = ticket_facts.get("has_receipt", False)
+        has_address = ticket_facts.get("has_address", False)
+        if has_model or has_receipt or has_address:
+            logger.info(f"{STEP_NAME} | Ticket facts presence: model={has_model}, receipt={has_receipt}, address={has_address}")
     
     # 2. Process Vision results
     if vision_result and vision_result.get("matches"):
@@ -370,6 +426,27 @@ def analyze_evidence(
         logger.info(f"{STEP_NAME} | ✅ OCR strong match: {best_ocr.product_model}")
         return bundle
     
+    # ===============================
+    # PRIORITY 2.5: Ticket Facts models (customer-provided in ticket text)
+    # ===============================
+    # This prevents asking for model numbers the customer already gave us
+    ticket_facts_items = [i for i in evidence_items if i.source == "ticket_facts" and i.confidence >= 0.75]
+    if ticket_facts_items:
+        best_ticket_fact = max(ticket_facts_items, key=lambda x: x.confidence)
+        bundle.primary_product = {
+            "model": best_ticket_fact.product_model,
+            "name": best_ticket_fact.product_name,
+            "category": best_ticket_fact.product_category,
+            "source": "ticket_facts",
+            "confidence": best_ticket_fact.confidence
+        }
+        bundle.resolution_action = "proceed"
+        bundle.final_confidence = 0.85
+        verified_str = " (planner verified)" if best_ticket_fact.raw_data.get("verified") else ""
+        bundle.evidence_summary = f"Customer provided model {best_ticket_fact.product_model} in ticket text{verified_str}"
+        logger.info(f"{STEP_NAME} | ✅ Ticket facts match: {best_ticket_fact.product_model}")
+        return bundle
+    
     # Check for agent's document-based product identification (second highest priority)
     agent_doc_items = [i for i in evidence_items if i.source == "agent_document_analysis" and i.confidence >= 0.70]
     if agent_doc_items:
@@ -583,10 +660,14 @@ def generate_info_request_response(
     customer_name: str = "Customer",
     ticket_subject: str = "",
     ticket_text: str = "",
-    ticket_category: str = ""
+    ticket_category: str = "",
+    ticket_facts: Optional[Dict[str, Any]] = None  # NEW: Pre-extracted facts
 ) -> Dict[str, str]:
     """
     Generate info request response - returns empty to force LLM-generated response.
+    
+    NOW CHECKS ticket_facts before deciding what info to request.
+    If ticket_facts has model numbers, we should NOT ask for model numbers again.
     
     NOTE: We no longer use hardcoded placeholder messages like:
     "To locate the correct replacement part, please provide model number..."
@@ -606,6 +687,32 @@ def generate_info_request_response(
     # Build private note for human agent review
     possible_product = bundle.primary_product.get("model") if bundle.primary_product else None
     
+    # Check what info we already have from ticket_facts
+    has_model_from_facts = False
+    has_receipt_from_facts = False
+    has_address_from_facts = False
+    known_models = []
+    
+    if ticket_facts:
+        raw_codes = ticket_facts.get("raw_product_codes", [])
+        # NOTE: Key is planner_verified_models, not verified_models!
+        verified_models = ticket_facts.get("planner_verified_models", [])
+        
+        # verified_models is List[str], raw_codes is List[dict]
+        # We need to normalize to List[str] for display
+        if verified_models:
+            known_models = verified_models  # Already strings
+        else:
+            # Extract model strings from raw_codes dicts
+            known_models = [c.get("model") for c in raw_codes if isinstance(c, dict) and c.get("model")]
+        
+        has_model_from_facts = bool(known_models)
+        has_receipt_from_facts = ticket_facts.get("has_receipt", False)
+        has_address_from_facts = ticket_facts.get("has_address", False)
+        
+        if known_models:
+            logger.info(f"{STEP_NAME} | generate_info_request: Customer already provided models: {known_models}")
+    
     # Detect request type for private note
     ticket_lower = (ticket_text + " " + ticket_subject).lower()
     is_parts_request = any(word in ticket_lower for word in ["part", "replacement", "spare", "broken", "repair", "fix", "cartridge", "diverter"])
@@ -613,11 +720,41 @@ def generate_info_request_response(
     is_return_request = any(word in ticket_lower for word in ["return", "refund", "exchange", "send back"])
     request_type = "Parts" if is_parts_request else "Warranty" if is_warranty_request else "Return" if is_return_request else "General"
     
+    # Build info status for private note
+    info_status = []
+    if has_model_from_facts:
+        info_status.append(f"✅ Model(s) provided: {', '.join(known_models)}")
+    else:
+        info_status.append("❓ Model number: Not found in ticket")
+    
+    if has_receipt_from_facts:
+        info_status.append("✅ Receipt: Present")
+    if has_address_from_facts:
+        info_status.append("✅ Address: Present")
+    request_type = "Parts" if is_parts_request else "Warranty" if is_warranty_request else "Return" if is_return_request else "General"
+    
+    # Build info status for private note
+    info_status = []
+    if has_model_from_facts:
+        info_status.append(f"✅ Model(s) provided: {', '.join(known_models)}")
+    else:
+        info_status.append("❓ Model number: Not found in ticket")
+    
+    if has_receipt_from_facts:
+        info_status.append("✅ Receipt: Present")
+    if has_address_from_facts:
+        info_status.append("✅ Address: Present")
+    
+    info_status_str = "\n".join(info_status)
+    
     private_note = f"""🤖 **AI Summary**
 • Request: {request_type}
 • Confidence: {int(bundle.final_confidence * 100)}%
 • Best guess: {possible_product or 'Unknown'}
 • Reason: {bundle.conflict_reason or 'Insufficient evidence for confident response'}
+
+**Customer-Provided Info:**
+{info_status_str}
 
 **Action:** Review gathered documents and respond based on available information."""
     

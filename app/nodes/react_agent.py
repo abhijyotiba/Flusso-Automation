@@ -2,6 +2,7 @@
 ReACT Agent Node - FIXED VERSION
 Reasoning + Acting Loop with proper context tracking
 Enhanced with Planning Module (Phase 1)
+Enhanced with Ticket Facts (Phase 2)
 """
 
 import logging
@@ -26,12 +27,24 @@ try:
     from app.nodes.planner import (
         create_execution_plan, 
         get_plan_context_for_agent,
-        should_follow_plan_step
+        should_follow_plan_step,
+        verify_ticket_facts  # NEW: For ticket_facts verification
     )
     PLANNER_AVAILABLE = True
 except ImportError:
     PLANNER_AVAILABLE = False
     logging.getLogger(__name__).warning("Planner module not available")
+
+# Ticket extractor helpers import
+try:
+    from app.nodes.ticket_extractor import (
+        update_ticket_facts,
+        get_model_candidates_from_facts
+    )
+    TICKET_EXTRACTOR_AVAILABLE = True
+except ImportError:
+    TICKET_EXTRACTOR_AVAILABLE = False
+    logging.getLogger(__name__).warning("Ticket extractor module not available")
 
 # Evidence resolver import
 try:
@@ -432,18 +445,34 @@ def react_agent_loop(state: TicketState) -> Dict[str, Any]:
     logger.info(f"{STEP_NAME} | Ticket #{ticket_id}: {len(ticket_text)} chars, {len(ticket_images)} images, {len(attachments)} attachments")
     
     # ========================================
-    # PHASE 1: PLANNING MODULE
+    # PHASE 1: PLANNING MODULE + TICKET FACTS VERIFICATION
     # ========================================
     execution_plan = None
     plan_context = ""
     current_plan_step = 0
     planning_updates = {}
+    ticket_facts = state.get("ticket_facts", {}) or {}
+    ticket_facts_updates = {}
     
     # Run planner if enabled and available
     planner_enabled = getattr(settings, 'enable_planner', True)
     if PLANNER_AVAILABLE and planner_enabled:
         logger.info(f"{STEP_NAME} | 🧠 Running execution planner...")
         try:
+            # First verify ticket_facts if not already verified
+            if ticket_facts and not ticket_facts.get("planner_verified"):
+                logger.info(f"{STEP_NAME} | 🔍 Verifying ticket_facts from extractor...")
+                verified_result = verify_ticket_facts(state)
+                if verified_result.get("ticket_facts"):
+                    ticket_facts = verified_result["ticket_facts"]
+                    ticket_facts_updates = {"ticket_facts": ticket_facts}
+                    
+                    # Log what was verified
+                    verified_models = ticket_facts.get("planner_verified_models", [])
+                    if verified_models:
+                        logger.info(f"{STEP_NAME} | ✅ Verified models: {verified_models}")
+            
+            # Then create execution plan
             execution_plan = create_execution_plan(state)
             
             if execution_plan and execution_plan.get("execution_plan"):
@@ -478,6 +507,16 @@ def react_agent_loop(state: TicketState) -> Dict[str, Any]:
             logger.info(f"{STEP_NAME} | Planner module not available")
         elif not planner_enabled:
             logger.info(f"{STEP_NAME} | Planner disabled in settings")
+    
+    # Log ticket_facts summary for debugging
+    if ticket_facts:
+        model_candidates = get_model_candidates_from_facts(ticket_facts) if TICKET_EXTRACTOR_AVAILABLE else []
+        if model_candidates:
+            logger.info(f"{STEP_NAME} | 📦 Model candidates from ticket_facts: {model_candidates}")
+        if ticket_facts.get("has_receipt"):
+            logger.info(f"{STEP_NAME} | 📄 Receipt/invoice detected in ticket")
+        if ticket_facts.get("has_photos"):
+            logger.info(f"{STEP_NAME} | 📷 Photos attached to ticket")
     
     # ========================================
     # INITIALIZE AGENT STATE
@@ -563,7 +602,8 @@ def react_agent_loop(state: TicketState) -> Dict[str, Any]:
             iterations=iterations,
             tool_results=tool_results,
             iteration_num=iteration_num,
-            max_iterations=MAX_ITERATIONS
+            max_iterations=MAX_ITERATIONS,
+            ticket_facts=ticket_facts  # NEW: Pass ticket_facts as hints
         )
         
         # ========================================
@@ -1094,6 +1134,8 @@ NOTE: You may deviate from the plan based on tool results. The plan is a guide, 
             "workflow_error_type": workflow_error_type,
             "workflow_error_node": workflow_error_node,
             "is_system_error": True,
+            # Include ticket_facts even on error (preserve any verification done)
+            **(ticket_facts_updates if ticket_facts_updates else {}),
             **error_legacy_updates,  # Include source_products, source_documents, etc.
             "audit_events": audit_events
         }
@@ -1149,7 +1191,8 @@ NOTE: You may deviate from the plan based on tool results. The plan is a guide, 
                         product_with_source["exact_match"] = is_exact
                         product_results.append(product_with_source)
         
-        # Analyze evidence
+        # Analyze evidence - now includes ticket_facts to close the "Split Brain" gap
+        ticket_facts = state.get("ticket_facts")
         evidence_bundle = analyze_evidence(
             ocr_result=ocr_result,
             vision_result=vision_result,
@@ -1157,7 +1200,8 @@ NOTE: You may deviate from the plan based on tool results. The plan is a guide, 
             document_results=gathered_documents,
             past_ticket_results=gathered_past_tickets,
             agent_identified_product=identified_product,  # Pass agent's product from finish_tool
-            agent_confidence=product_confidence  # Pass agent's confidence
+            agent_confidence=product_confidence,  # Pass agent's confidence
+            ticket_facts=ticket_facts  # Pass pre-extracted ticket facts
         )
         
         logger.info(f"{STEP_NAME} | 📊 Evidence analysis: action={evidence_bundle.resolution_action}, confidence={evidence_bundle.final_confidence:.0%}")
@@ -1171,7 +1215,8 @@ NOTE: You may deviate from the plan based on tool results. The plan is a guide, 
                 customer_name=requester_name,
                 ticket_subject=state.get("ticket_subject", ""),
                 ticket_text=state.get("ticket_text", ""),
-                ticket_category=ticket_category
+                ticket_category=ticket_category,
+                ticket_facts=ticket_facts  # Pass ticket_facts to avoid asking for known info
             )
             logger.info(f"{STEP_NAME} | 📝 Generated contextual info request for customer")
         
@@ -1265,5 +1310,9 @@ NOTE: You may deviate from the plan based on tool results. The plan is a guide, 
         result.update(planning_updates)
         # Update final plan step
         result["current_plan_step"] = current_plan_step
+    
+    # Add ticket_facts updates if available (from planner verification)
+    if ticket_facts_updates:
+        result.update(ticket_facts_updates)
     
     return result

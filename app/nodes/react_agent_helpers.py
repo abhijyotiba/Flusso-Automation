@@ -33,9 +33,10 @@ def _build_agent_context(
     iterations: List[Dict],
     tool_results: Dict[str, Any],
     iteration_num: int,
-    max_iterations: int
+    max_iterations: int,
+    ticket_facts: Optional[Dict[str, Any]] = None
 ) -> str:
-    """Build context for ReACT agent with ticket info and history"""
+    """Build context for ReACT agent with ticket info, history, and ticket_facts hints"""
     
     context_parts = [
         f"═══ ITERATION {iteration_num}/{max_iterations} ═══\n",
@@ -54,6 +55,61 @@ def _build_agent_context(
         for att in attachments[:5]:  # Show first 5
             att_info.append(f"  - {att.get('filename', 'Unknown')} ({att.get('type', 'unknown')})")
         context_parts.append("\n".join(att_info))
+    
+    # =========================================================================
+    # NEW: TICKET FACTS HINTS (from ticket_extractor)
+    # =========================================================================
+    if ticket_facts:
+        context_parts.append(f"\n\n═══ PRE-EXTRACTED HINTS (use to guide your search) ═══")
+        
+        # Show model candidates prominently
+        model_candidates = []
+        
+        # Priority 1: Confirmed model (if any)
+        if ticket_facts.get("confirmed_model"):
+            model_candidates.append(f"✅ {ticket_facts['confirmed_model']} (confirmed)")
+        
+        # Priority 2: Planner-verified models
+        for m in ticket_facts.get("planner_verified_models", []):
+            if m not in [mc.split()[0] for mc in model_candidates]:  # Avoid duplicates
+                model_candidates.append(f"🔵 {m} (verified)")
+        
+        # Priority 3: Raw extracted models
+        for code in ticket_facts.get("raw_product_codes", []):
+            model = code.get("model")
+            if model and model not in [mc.split()[0] for mc in model_candidates]:
+                finish = code.get("finish_code")
+                if finish:
+                    model_candidates.append(f"📦 {model} (finish: {finish})")
+                else:
+                    model_candidates.append(f"📦 {model}")
+        
+        if model_candidates:
+            context_parts.append(f"\n🎯 MODEL CANDIDATES (try these in product_catalog_tool):")
+            for mc in model_candidates[:5]:  # Limit to 5
+                context_parts.append(f"   {mc}")
+            context_parts.append(f"   ➡️ Use product_catalog_tool with these BEFORE doing vision search!")
+        
+        # Show finish preferences
+        finishes = ticket_facts.get("raw_finish_mentions", [])
+        if finishes:
+            context_parts.append(f"\n🎨 FINISH PREFERENCES: {', '.join(finishes)}")
+        
+        # Show presence flags that matter
+        presence_hints = []
+        if ticket_facts.get("has_receipt"):
+            presence_hints.append("📄 Receipt/invoice may be in attachments")
+        if ticket_facts.get("has_po"):
+            presence_hints.append("📋 PO/order number mentioned")
+        if ticket_facts.get("has_address"):
+            presence_hints.append("📍 Shipping address may be present")
+        
+        if presence_hints:
+            context_parts.append(f"\n⚡ HINTS:")
+            for hint in presence_hints:
+                context_parts.append(f"   {hint}")
+        
+        context_parts.append("")  # Blank line
     
     # Show what tools have been used
     if iterations:

@@ -16,6 +16,124 @@ logger = logging.getLogger(__name__)
 STEP_NAME = "1️⃣6️⃣ FRESHDESK_UPDATE"
 
 
+# --------------------------------------------------------------------
+# HTML Formatters for Collapsible Sections
+# --------------------------------------------------------------------
+def _format_unresolved_note_html(state: TicketState, status: str, reply_text: str) -> str:
+    """
+    Format an unresolved ticket note with collapsible HTML sections.
+    Creates expandable dropdowns for Summary, Suggested Response, and Decision Metrics.
+    """
+    summary = state.get("summary", "No summary available")
+    suggested_action = state.get("suggested_action", "No specific actions recommended")
+    
+    return f"""
+<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
+    <div style="background: #fff3cd; border-left: 4px solid #ffc107; padding: 12px; margin-bottom: 15px; border-radius: 4px;">
+        <strong>🤖 AI Review Needed</strong><br>
+        <span style="color: #856404;">Status: {status}</span>
+    </div>
+
+    <details open>
+        <summary style="font-size: 14px; font-weight: bold; cursor: pointer; padding: 8px 0; color: #2c3e50;">
+            📋 Summary & Analysis
+        </summary>
+        <div style="padding: 12px; border-left: 3px solid #3498db; margin: 8px 0 15px 0; background: #f8f9fa;">
+            {summary}
+        </div>
+    </details>
+
+    <details>
+        <summary style="font-size: 14px; font-weight: bold; cursor: pointer; padding: 8px 0; color: #2c3e50;">
+            ⚡ Recommended Actions
+        </summary>
+        <div style="padding: 12px; border-left: 3px solid #f39c12; margin: 8px 0 15px 0; background: #f8f9fa;">
+            {suggested_action}
+        </div>
+    </details>
+
+    <details>
+        <summary style="font-size: 14px; font-weight: bold; cursor: pointer; padding: 8px 0; color: #2c3e50;">
+            📝 Draft Response (Suggested)
+        </summary>
+        <div style="padding: 12px; background: #f9f9f9; border: 1px solid #e0e0e0; margin: 8px 0 15px 0; border-radius: 4px;">
+            <pre style="white-space: pre-wrap; margin: 0; font-family: inherit;">{reply_text}</pre>
+        </div>
+    </details>
+
+    <details>
+        <summary style="font-size: 14px; font-weight: bold; cursor: pointer; padding: 8px 0; color: #2c3e50;">
+            📊 Decision Metrics
+        </summary>
+        <div style="padding: 12px; border-left: 3px solid #9b59b6; margin: 8px 0 15px 0; background: #f8f9fa;">
+            <ul style="margin: 0; padding-left: 20px;">
+                <li><strong>Product Confidence:</strong> {state.get('product_match_confidence', 0):.2f}</li>
+                <li><strong>Hallucination Risk:</strong> {state.get('hallucination_risk', 0):.2f}</li>
+                <li><strong>Enough Information:</strong> {state.get('enough_information', False)}</li>
+                <li><strong>VIP Compliant:</strong> {state.get('vip_compliant', True)}</li>
+            </ul>
+        </div>
+    </details>
+</div>
+"""
+
+
+def _format_resolved_note_html(state: TicketState, reply_text: str) -> str:
+    """
+    Format a resolved ticket note with collapsible HTML sections.
+    Creates expandable dropdowns for Summary, Suggested Actions, and Draft Response.
+    """
+    summary = state.get("summary", "No summary available")
+    suggested_action = state.get("suggested_action", "No specific actions recommended")
+    
+    return f"""
+<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
+    <div style="background: #d4edda; border-left: 4px solid #28a745; padding: 12px; margin-bottom: 15px; border-radius: 4px;">
+        <strong>🤖 AI Draft Ready for Review</strong>
+    </div>
+
+    <details open>
+        <summary style="font-size: 14px; font-weight: bold; cursor: pointer; padding: 8px 0; color: #2c3e50;">
+            📋 Summary & Analysis
+        </summary>
+        <div style="padding: 12px; border-left: 3px solid #3498db; margin: 8px 0 15px 0; background: #f8f9fa;">
+            {summary}
+        </div>
+    </details>
+
+    <details>
+        <summary style="font-size: 14px; font-weight: bold; cursor: pointer; padding: 8px 0; color: #2c3e50;">
+            ⚡ Recommended Actions
+        </summary>
+        <div style="padding: 12px; border-left: 3px solid #f39c12; margin: 8px 0 15px 0; background: #f8f9fa;">
+            {suggested_action}
+        </div>
+    </details>
+
+    <details open>
+        <summary style="font-size: 14px; font-weight: bold; cursor: pointer; padding: 8px 0; color: #2c3e50;">
+            📝 Draft Response
+        </summary>
+        <div style="padding: 12px; background: #f9f9f9; border: 1px solid #e0e0e0; margin: 8px 0 15px 0; border-radius: 4px;">
+            <pre style="white-space: pre-wrap; margin: 0; font-family: inherit;">{reply_text}</pre>
+        </div>
+    </details>
+
+    <details>
+        <summary style="font-size: 14px; font-weight: bold; cursor: pointer; padding: 8px 0; color: #2c3e50;">
+            📊 Confidence Metrics
+        </summary>
+        <div style="padding: 12px; border-left: 3px solid #9b59b6; margin: 8px 0 15px 0; background: #f8f9fa;">
+            <ul style="margin: 0; padding-left: 20px;">
+                <li><strong>Product Confidence:</strong> {state.get('product_match_confidence', 0):.2f}</li>
+                <li><strong>Hallucination Risk:</strong> {state.get('hallucination_risk', 0):.2f}</li>
+            </ul>
+        </div>
+    </details>
+</div>
+"""
+
+
 def _handle_skipped_ticket(state: TicketState, ticket_id: int, start_time: float) -> Dict[str, Any]:
     """
     Handle tickets that skipped the full workflow (PO, auto-reply, spam, already_processed).
@@ -140,29 +258,17 @@ def update_freshdesk_ticket(state: TicketState) -> Dict[str, Any]:
         ]
 
         if unresolved:
-            # Private note with review needed flag
-            note_text = f"""
-🤖 <b>AI Review Needed</b>
-
-<b>Status:</b> {status}
-
-<b>Suggested Reply:</b>
-{reply_text}
-
-<b>Decision Metrics:</b>
-• Product Confidence: {state.get('product_match_confidence', 0):.2f}
-• Hallucination Risk: {state.get('hallucination_risk', 0):.2f}
-• Enough Info: {state.get('enough_information', False)}
-• VIP Compliant: {state.get('vip_compliant', True)}
-"""
+            # Private note with review needed flag - using collapsible HTML sections
+            note_text = _format_unresolved_note_html(state, status, reply_text)
             logger.info(f"{STEP_NAME} | 📝 Adding PRIVATE note (needs human review)")
         else:
             # Private note with draft response for agent to review and send
-            note_text = reply_text
+            # Format as collapsible HTML sections for better readability
+            note_text = _format_resolved_note_html(state, reply_text)
             logger.info(f"{STEP_NAME} | 📝 Adding PRIVATE note (AI draft for agent review)")
 
         note_start = time.time()
-        client.add_note(ticket_id, note_text, private=True)
+        client.add_note(ticket_id, note_text, private=True, is_html=True)
         logger.info(f"{STEP_NAME} | ✓ Private note added in {time.time() - note_start:.2f}s")
         note_type = "private"
 

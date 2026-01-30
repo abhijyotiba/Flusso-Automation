@@ -90,10 +90,23 @@ class FreshdeskClient:
     # Add Note (with retry)
     # --------------------------------------------------------------------
     @retry_api_call
-    def add_note(self, ticket_id: int, body: str, private: bool = True) -> Dict[str, Any]:
+    def add_note(self, ticket_id: int, body: str, private: bool = True, is_html: bool = False) -> Dict[str, Any]:
+        """
+        Add a note to a Freshdesk ticket.
+        
+        Args:
+            ticket_id: The ticket ID to add note to
+            body: The note content (plain text or HTML)
+            private: Whether the note is private (default True)
+            is_html: If True, sends content as HTML using body_html field,
+                     which supports formatting like <details>/<summary> tags
+                     for collapsible sections. Default False for backward compatibility.
+        """
         url = f"{self.base_url}/tickets/{ticket_id}/notes"
 
-        payload = {"body": body, "private": private}
+        # Use body_html for HTML content, body for plain text
+        content_key = "body_html" if is_html else "body"
+        payload = {content_key: body, "private": private}
 
         response = requests.post(
             url,
