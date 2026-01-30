@@ -473,11 +473,38 @@ def draft_final_response(state: TicketState) -> Dict[str, Any]:
     product_confidence_for_links = state.get("product_confidence", 0.0) or confidence
     
     # === Missing Requirements Check (for returns/replacements/warranty) ===
-    missing_requirements = state.get("missing_requirements", []) or []
+    # IMPORTANT: Agent's missing_requirements from finish_tool takes precedence
+    # Agent may flag "clearer photo needed" even when image exists but doesn't show defect
+    agent_missing_requirements = state.get("missing_requirements", []) or []
     ticket_images = state.get("ticket_images", []) or []
     ticket_attachments = state.get("ticket_attachments", []) or []
     
+    # === Image Analysis Insights (from OCR analyzer) ===
+    # This tells us if the image shows a defect or if product appears in good condition
+    image_analysis_insights = state.get("image_analysis_insights", []) or []
+    image_shows_defect = False
+    image_condition_note = ""
+    
+    if image_analysis_insights:
+        for insight in image_analysis_insights:
+            condition = insight.get("condition", "").lower()
+            image_type = insight.get("image_type", "")
+            description = insight.get("description", "")
+            
+            # Check if image analysis found a defect/damage
+            if image_type == "damaged_item" or any(word in condition for word in ["damage", "defect", "broken", "crack", "leak", "worn"]):
+                image_shows_defect = True
+            # Check if image shows product in good/excellent condition (no defect visible)
+            elif any(word in condition for word in ["excellent", "good", "new", "mint"]) and not image_shows_defect:
+                image_condition_note = f"Image received shows product in '{condition[:50]}' - defect not clearly visible"
+        
+        logger.info(f"{STEP_NAME} | 🖼️ Image analysis: shows_defect={image_shows_defect}, condition_note='{image_condition_note[:60]}...'")
+    
+    # Initialize missing_requirements with agent's assessment
+    missing_requirements = list(agent_missing_requirements) if agent_missing_requirements else []
+    
     # Auto-detect missing requirements for return/replacement/warranty tickets
+    # BUT respect agent's assessment - if agent says "clearer photo needed", don't override
     if ticket_category in ["return_refund", "replacement_parts", "warranty_claim", "product_issue"]:
         ticket_lower = (ticket_text + " " + subject).lower()
         
@@ -499,22 +526,39 @@ def draft_final_response(state: TicketState) -> Dict[str, Any]:
             for att in ticket_attachments
         )
         
-        # Build missing requirements list
+        # Build auto-detected missing requirements list
         auto_missing = []
-        if not has_po and "PO number" not in missing_requirements:
+        if not has_po and not any("po" in req.lower() or "purchase" in req.lower() for req in agent_missing_requirements):
             auto_missing.append("PO/Purchase Order number or proof of purchase")
-        if not has_media and ticket_category in ["warranty_claim", "product_issue", "replacement_parts"]:
-            if "photo of defect" not in missing_requirements and "video" not in str(missing_requirements).lower():
+        
+        # For photo requirement: 
+        # - If no image at all, ask for photo
+        # - If image exists but agent flagged "clearer photo needed", respect that
+        # - If image exists and shows defect, don't ask for photo
+        # - If image exists but doesn't show defect clearly (condition=excellent), ask for clearer photo
+        photo_requirement_from_agent = any("photo" in req.lower() or "video" in req.lower() or "image" in req.lower() for req in agent_missing_requirements)
+        
+        if ticket_category in ["warranty_claim", "product_issue", "replacement_parts"]:
+            if photo_requirement_from_agent:
+                # Agent already flagged this - don't add duplicate
+                pass
+            elif not has_media:
+                # No image at all
                 auto_missing.append("Photo or video showing the issue/defect")
+            elif has_media and image_condition_note and not image_shows_defect:
+                # Image exists but doesn't show defect clearly
+                auto_missing.append("Clearer photo or video showing the specific defect/issue area")
+        
         if not has_address and ticket_category in ["return_refund", "replacement_parts", "warranty_claim"]:
-            if "shipping address" not in missing_requirements:
+            if not any("address" in req.lower() for req in agent_missing_requirements):
                 auto_missing.append("Shipping address for replacement delivery")
         
-        # Combine with any requirements the agent flagged
-        missing_requirements = list(set(missing_requirements + auto_missing))
+        # Combine: agent's requirements take priority, then add auto-detected
+        missing_requirements = list(set(agent_missing_requirements + auto_missing))
         
         logger.info(f"{STEP_NAME} | 🔍 Requirements check: PO={has_po}, Media={has_media}, Address={has_address}")
-        logger.info(f"{STEP_NAME} | ⚠️ Missing requirements: {missing_requirements}")
+        logger.info(f"{STEP_NAME} | 📋 Agent flagged: {agent_missing_requirements}")
+        logger.info(f"{STEP_NAME} | ⚠️ Final missing requirements: {missing_requirements}")
 
     # === Fetch Policy Context for Response Generation ===
     policy_context = ""
@@ -668,6 +712,27 @@ Once we receive this information, we can proceed with your request."
 - Keep response brief and professional
 """
 
+    # Build image analysis guidance if we have insights about image condition
+    image_analysis_guidance = ""
+    if image_condition_note:
+        image_analysis_guidance = f"""
+═══════════════════════════════════════════════════════════════════════
+📸 IMAGE ANALYSIS RESULT - IMPORTANT
+═══════════════════════════════════════════════════════════════════════
+We DID receive and analyze the customer's attached image.
+Result: {image_condition_note}
+
+⚠️ CRITICAL: DO NOT say "the photo did not come through" or "we didn't receive the image"
+The image WAS received and processed - it just doesn't clearly show the defect.
+
+CORRECT response: "We received your photo. However, we couldn't clearly identify the 
+discoloration/defect in the image. Could you please send a closer photo specifically 
+highlighting the affected area?"
+
+INCORRECT response: "Please re-send the photo as it did not come through on our end."
+═══════════════════════════════════════════════════════════════════════
+"""
+    
     meta = f"""
 TODAY'S DATE: {current_date} ({current_date_readable})
 Use this date for ALL date comparisons. Any date before {current_date} is in the PAST.
@@ -683,6 +748,7 @@ DECISION METRICS:
 - VIP Compliant: {vip_ok}
 - Vision Match Quality: {vision_quality}
 {vision_guidance}
+{image_analysis_guidance}
 """
 
     # Build policy section for prompt

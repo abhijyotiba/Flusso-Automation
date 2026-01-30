@@ -58,7 +58,8 @@ def finish_tool(
     relevant_images: Optional[Union[List[Any], Any]] = None,
     past_tickets: Optional[Union[List[Any], Any]] = None,
     confidence: float = 0.5,
-    reasoning: str = ""
+    reasoning: str = "",
+    missing_requirements: Optional[List[str]] = None
 ) -> Dict[str, Any]:
     """
     Submit final gathered context and stop the ReACT loop.
@@ -81,6 +82,9 @@ def finish_tool(
         past_tickets: Similar tickets (flexible: list, dict, or string)
         confidence: Your confidence (0.0-1.0)
         reasoning: What you found and any gaps
+        missing_requirements: List of items still needed from customer (e.g., ["clearer photo of defect", "PO number"])
+                             Use this when image was received but doesn't clearly show the issue,
+                             or when other required info is missing for warranty/replacement claims.
     
     Returns:
         {
@@ -99,8 +103,11 @@ def finish_tool(
     docs = _safe_extract_list(relevant_documents)
     images = _safe_extract_list(relevant_images)
     tickets = _safe_extract_list(past_tickets)
+    missing_reqs = missing_requirements or []
     
     logger.info(f"[FINISH] Resources: {len(docs)} docs, {len(images)} images, {len(tickets)} tickets")
+    if missing_reqs:
+        logger.info(f"[FINISH] Missing requirements flagged: {missing_reqs}")
     
     # Assess context quality
     score = 0
@@ -167,6 +174,7 @@ def finish_tool(
         "past_tickets": tickets,
         "confidence": confidence,
         "reasoning": reasoning,
+        "missing_requirements": missing_reqs,
         "summary": summary,
         "context_quality": quality,
         "context_score": score

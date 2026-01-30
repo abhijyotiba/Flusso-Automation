@@ -548,6 +548,11 @@ def react_agent_loop(state: TicketState) -> Dict[str, Any]:
     vision_relevance_reason = ""
     vision_products = []  # Products found specifically via vision_search_tool
     
+    # Agent's assessment of missing requirements (from finish_tool)
+    agent_missing_requirements = []
+    # Image analysis insights (condition, description from OCR analyzer)
+    image_analysis_insights = []
+    
     llm = get_llm_client()
     
     # Track what we've tried to avoid repetition
@@ -846,6 +851,23 @@ NOTE: You may deviate from the plan based on tool results. The plan is a guide, 
                     img_url = result.get("image_url")
                     if img_url and img_url not in gathered_images:
                         gathered_images.append(img_url)
+                
+                # Capture image analysis insights (condition, description) for response generation
+                # This helps the response generator know if the image shows the defect or not
+                if results:
+                    image_analysis_insights = []
+                    for result in results:
+                        insight = {
+                            "image_type": result.get("image_type", "unknown"),
+                            "description": result.get("description", ""),
+                            "condition": result.get("extracted_data", {}).get("condition", ""),
+                            "confidence": result.get("confidence", 0)
+                        }
+                        image_analysis_insights.append(insight)
+                    # Store for later use in response generation
+                    tool_results["image_analysis_insights"] = image_analysis_insights
+                    logger.info(f"{STEP_NAME} | 🖼️  Image condition detected: {image_analysis_insights[0].get('condition', 'unknown')[:50]}...")
+                
                 logger.info(f"{STEP_NAME} | 🖼️  OCR analysis: {len(results)} image(s) processed")
             
             elif action == "past_tickets_search_tool" and tool_output.get("success"):
@@ -968,6 +990,12 @@ NOTE: You may deviate from the plan based on tool results. The plan is a guide, 
                 
                 # Update from finish tool output
                 identified_product = tool_output.get("product_details", identified_product)
+                
+                # IMPORTANT: Capture missing_requirements from agent's finish_tool input
+                # This preserves agent's assessment of what info is still needed
+                agent_missing_requirements = action_input.get("missing_requirements", [])
+                if agent_missing_requirements:
+                    logger.info(f"{STEP_NAME} | 📋 Agent flagged missing requirements: {agent_missing_requirements}")
 
                 # Normalize resources returned by finish_tool - ensure dicts, never strings
                 def _normalize_docs(docs):
@@ -1292,6 +1320,10 @@ NOTE: You may deviate from the plan based on tool results. The plan is a guide, 
         # Vision match quality for downstream confidence/hallucination checks
         "vision_match_quality": vision_match_quality,
         "vision_relevance_reason": vision_relevance_reason,
+        # Agent's missing requirements assessment (from finish_tool)
+        "missing_requirements": agent_missing_requirements,
+        # Image analysis insights (condition, description from OCR)
+        "image_analysis_insights": tool_results.get("image_analysis_insights", []),
         # Evidence analysis results
         "evidence_analysis": evidence_analysis,
         "needs_more_info": needs_more_info,
