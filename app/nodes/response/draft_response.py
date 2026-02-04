@@ -2,6 +2,7 @@
 Draft Final Response Node
 Generates customer-facing response based on all analysis.
 Enhanced with source citations for human agent review.
+Enhanced with constraint validation for enforcement (Phase 3).
 """
 
 import logging
@@ -19,6 +20,20 @@ from app.utils.detailed_logger import (
 )
 from app.services.resource_links_service import get_resource_links_for_response
 from app.services.policy_service import get_relevant_policy
+
+# Constraint validator import (NEW)
+try:
+    from app.services.constraint_validator import (
+        validate_constraints,
+        format_constraints_for_prompt,
+        post_validate_response,
+        enforce_constraints_on_response,
+        ConstraintResult,
+    )
+    CONSTRAINT_VALIDATOR_AVAILABLE = True
+except ImportError:
+    CONSTRAINT_VALIDATOR_AVAILABLE = False
+    logging.getLogger(__name__).warning("Constraint validator not available in draft_response")
 
 logger = logging.getLogger(__name__)
 STEP_NAME = "1️⃣4️⃣ DRAFT_RESPONSE"
@@ -116,6 +131,34 @@ def convert_to_html(text: str) -> str:
     return html
 
 
+def build_collapsible_section(title: str, content: str, icon: str = "📋", default_open: bool = False) -> str:
+    """
+    Build a collapsible HTML section using <details> and <summary> tags.
+    
+    Args:
+        title: The section title shown in the summary
+        content: The HTML content to show when expanded
+        icon: Emoji icon for the section
+        default_open: Whether the section should be open by default
+    
+    Returns:
+        HTML string with collapsible section
+    """
+    open_attr = "open" if default_open else ""
+    return f"""
+<details {open_attr} style="margin-bottom: 16px; border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden;">
+    <summary style="background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%); padding: 12px 16px; cursor: pointer; font-weight: 600; color: #1e293b; display: flex; align-items: center; gap: 8px; user-select: none;">
+        <span style="font-size: 16px;">{icon}</span>
+        <span>{title}</span>
+        <span style="margin-left: auto; font-size: 12px; color: #64748b;">Click to expand</span>
+    </summary>
+    <div style="padding: 16px; background: #ffffff;">
+        {content}
+    </div>
+</details>
+"""
+
+
 def build_sources_html(
     source_documents: List[Dict[str, Any]],
     source_products: List[Dict[str, Any]],
@@ -124,10 +167,11 @@ def build_sources_html(
 ) -> str:
     """
     Build HTML section displaying all sources for the human agent.
+    Each source type is in its own collapsible section for better readability.
     """
     sections = []
     
-    # === RELEVANT DOCUMENTS ===
+    # === RELEVANT DOCUMENTS (Collapsible) ===
     if source_documents:
         doc_rows = ""
         for doc in source_documents[:5]:  # Limit to 5
@@ -141,9 +185,7 @@ def build_sources_html(
                 <td style="padding: 8px; border-bottom: 1px solid #e5e7eb; text-align: center;">{stars}</td>
             </tr>"""
         
-        sections.append(f"""
-        <div style="margin-bottom: 20px;">
-            <h4 style="color: #1e40af; margin-bottom: 10px;">📄 Relevant Documents</h4>
+        doc_table = f"""
             <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
                 <thead>
                     <tr style="background: #f3f4f6;">
@@ -153,10 +195,16 @@ def build_sources_html(
                     </tr>
                 </thead>
                 <tbody>{doc_rows}</tbody>
-            </table>
-        </div>""")
+            </table>"""
+        
+        sections.append(build_collapsible_section(
+            title=f"Relevant Documents ({len(source_documents[:5])} found)",
+            content=doc_table,
+            icon="📄",
+            default_open=False
+        ))
     
-    # === VISUAL MATCHES ===
+    # === VISUAL MATCHES (Collapsible) ===
     if source_products and vision_quality != "CATEGORY_MISMATCH":
         product_rows = ""
         for prod in source_products[:5]:  # Limit to 5
@@ -178,9 +226,8 @@ def build_sources_html(
             "NO_MATCH": '<span style="background: #6b7280; color: white; padding: 2px 8px; border-radius: 4px; font-size: 11px;">NO MATCH</span>',
         }.get(vision_quality, '')
         
-        sections.append(f"""
-        <div style="margin-bottom: 20px;">
-            <h4 style="color: #1e40af; margin-bottom: 10px;">🖼️ Visual Matches {quality_badge}</h4>
+        product_table = f"""
+            <div style="margin-bottom: 8px;">{quality_badge}</div>
             <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
                 <thead>
                     <tr style="background: #f3f4f6;">
@@ -191,16 +238,24 @@ def build_sources_html(
                     </tr>
                 </thead>
                 <tbody>{product_rows}</tbody>
-            </table>
-        </div>""")
+            </table>"""
+        
+        sections.append(build_collapsible_section(
+            title=f"Visual Matches ({len(source_products[:5])} found)",
+            content=product_table,
+            icon="🖼️",
+            default_open=False
+        ))
     elif vision_quality == "CATEGORY_MISMATCH":
-        sections.append(f"""
-        <div style="margin-bottom: 20px; background: #fef2f2; border: 1px solid #fecaca; border-radius: 8px; padding: 12px;">
-            <h4 style="color: #dc2626; margin-bottom: 8px;">🖼️ Visual Matches ❌ CATEGORY MISMATCH</h4>
-            <p style="margin: 0; font-size: 13px; color: #991b1b;">Visual search found products from a different category than what the customer is asking about. These results have been excluded.</p>
-        </div>""")
+        mismatch_content = '<p style="margin: 0; font-size: 13px; color: #991b1b;">Visual search found products from a different category than what the customer is asking about. These results have been excluded.</p>'
+        sections.append(build_collapsible_section(
+            title="Visual Matches ❌ CATEGORY MISMATCH",
+            content=mismatch_content,
+            icon="🖼️",
+            default_open=False
+        ))
     
-    # === PAST TICKETS ===
+    # === PAST TICKETS (Collapsible) ===
     if source_tickets:
         ticket_rows = ""
         for ticket in source_tickets[:5]:  # Limit to 5
@@ -217,9 +272,7 @@ def build_sources_html(
                 <td style="padding: 8px; border-bottom: 1px solid #e5e7eb; text-align: center;">{score}%</td>
             </tr>"""
         
-        sections.append(f"""
-        <div style="margin-bottom: 20px;">
-            <h4 style="color: #1e40af; margin-bottom: 10px;">🎫 Similar Past Tickets</h4>
+        ticket_table = f"""
             <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
                 <thead>
                     <tr style="background: #f3f4f6;">
@@ -229,8 +282,14 @@ def build_sources_html(
                     </tr>
                 </thead>
                 <tbody>{ticket_rows}</tbody>
-            </table>
-        </div>""")
+            </table>"""
+        
+        sections.append(build_collapsible_section(
+            title=f"Similar Past Tickets ({len(source_tickets[:5])} found)",
+            content=ticket_table,
+            icon="🎫",
+            default_open=False
+        ))
     
     if not sections:
         return """
@@ -238,11 +297,20 @@ def build_sources_html(
             <p style="margin: 0; color: #92400e; font-size: 13px;">⚠️ No source documents, product matches, or similar tickets were found for this request.</p>
         </div>"""
     
-    # Wrap all sections in a sources container
+    # Wrap all sections in a collapsible sources container
+    sources_content = ''.join(sections)
     sources_html = f"""
     <div style="margin-top: 24px; padding-top: 20px; border-top: 2px solid #e5e7eb;">
-        <h3 style="color: #374151; font-size: 16px; margin-bottom: 16px;">📎 SOURCES</h3>
-        {''.join(sections)}
+        <details style="border: 1px solid #cbd5e1; border-radius: 8px; overflow: hidden;">
+            <summary style="background: linear-gradient(135deg, #374151 0%, #4b5563 100%); padding: 14px 18px; cursor: pointer; font-weight: bold; color: white; display: flex; align-items: center; gap: 10px; user-select: none;">
+                <span style="font-size: 18px;">📎</span>
+                <span style="font-size: 15px;">SOURCES & REFERENCES</span>
+                <span style="margin-left: auto; font-size: 12px; color: #d1d5db; font-weight: normal;">▼ Click to view AI source data</span>
+            </summary>
+            <div style="padding: 16px; background: #fafafa;">
+                {sources_content}
+            </div>
+        </details>
     </div>"""
     
     return sources_html
@@ -772,12 +840,44 @@ that the customer has NOT provided, you MUST ask for it before proceeding.
 ═══════════════════════════════════════════════════════════════════════
 """
 
+    # === CONSTRAINT VALIDATION (Phase 3) ===
+    # Get or compute constraints from ticket_facts and category
+    constraint_result = state.get("constraint_result")
+    constraints_prompt_section = state.get("constraints_prompt_section", "")
+    
+    if CONSTRAINT_VALIDATOR_AVAILABLE and not constraint_result:
+        # Compute constraints if not already in state
+        ticket_facts = state.get("ticket_facts", {})
+        product_text = state.get("product_text", "") or ""
+        try:
+            raw_constraint_result = validate_constraints(
+                ticket_facts=ticket_facts,
+                ticket_category=ticket_category,
+                product_text=product_text
+            )
+            # Convert to dict for state storage and later use
+            constraint_result = raw_constraint_result.to_dict()
+            constraints_prompt_section = format_constraints_for_prompt(constraint_result)
+            logger.info(f"{STEP_NAME} | 🔒 Computed constraints: missing_fields={len(constraint_result.get('missing_fields', []))}, required_citations={len(constraint_result.get('required_citations', []))}")
+        except Exception as e:
+            logger.warning(f"{STEP_NAME} | ⚠️ Constraint validation failed: {e}")
+            constraint_result = None
+            constraints_prompt_section = ""
+    elif constraint_result and not constraints_prompt_section:
+        # Format if we have result but not formatted prompt
+        try:
+            constraints_prompt_section = format_constraints_for_prompt(constraint_result)
+        except Exception as e:
+            logger.warning(f"{STEP_NAME} | ⚠️ Constraint formatting failed: {e}")
+            constraints_prompt_section = ""
+
     user_prompt = f"""CUSTOMER TICKET:
 Subject: {subject}
 Description: {ticket_text}
 
 TICKET CATEGORY: {ticket_category}
 {policy_prompt_section}
+{constraints_prompt_section}
 RETRIEVED CONTEXT:
 {context}
 
@@ -835,6 +935,42 @@ RETRIEVED CONTEXT:
         # Convert markdown-style formatting in response to HTML
         html_response = convert_to_html(response_text)
         
+        # === POST-VALIDATION: Ensure constraints are enforced in response ===
+        constraint_validation_result = None
+        constraint_warnings = []
+        
+        if CONSTRAINT_VALIDATOR_AVAILABLE and constraint_result:
+            try:
+                # Validate that LLM response includes required asks and citations
+                constraint_validation_result = post_validate_response(
+                    response_text=response_text,
+                    constraints=constraint_result
+                )
+                
+                # Extract warnings from validation
+                if not constraint_validation_result.get("valid", True):
+                    constraint_warnings = constraint_validation_result.get("warnings", [])
+                    logger.warning(f"{STEP_NAME} | ⚠️ Constraint validation warnings: {constraint_warnings}")
+                    
+                    # Attempt to auto-fix response if critical items missing
+                    if constraint_warnings:
+                        try:
+                            enforced_response = enforce_constraints_on_response(
+                                response_text=response_text,
+                                constraints=constraint_result
+                            )
+                            if enforced_response != response_text:
+                                logger.info(f"{STEP_NAME} | 🔧 Auto-enforced missing citations/asks in response")
+                                response_text = enforced_response
+                                html_response = convert_to_html(response_text)
+                        except Exception as enforce_err:
+                            logger.warning(f"{STEP_NAME} | ⚠️ Auto-enforce failed: {enforce_err}")
+                else:
+                    logger.info(f"{STEP_NAME} | ✅ Response passed constraint validation")
+                    
+            except Exception as validation_err:
+                logger.warning(f"{STEP_NAME} | ⚠️ Constraint post-validation failed: {validation_err}")
+        
         # === Build sources section ===
         sources_html = build_sources_html(
             source_documents=source_documents,
@@ -843,29 +979,63 @@ RETRIEVED CONTEXT:
             vision_quality=vision_quality
         )
         
-        # Build HTML confidence header for Freshdesk
-        confidence_header = f"""<div style="background: linear-gradient(135deg, #1e3a5f 0%, #2d5a87 100%); border-radius: 8px; padding: 16px; margin-bottom: 20px; font-family: Arial, sans-serif;">
-    <div style="display: flex; align-items: center; margin-bottom: 12px;">
-        <span style="font-size: 18px; margin-right: 8px;">📊</span>
-        <span style="color: white; font-weight: bold; font-size: 16px;">AI CONFIDENCE:</span>
-        <span style="background: {confidence_color}; color: white; padding: 4px 12px; border-radius: 12px; margin-left: 10px; font-weight: bold;">{confidence_label} ({overall_confidence:.0f}%)</span>
-    </div>
-    <div style="display: flex; gap: 20px; flex-wrap: wrap;">
-        <div style="background: rgba(255,255,255,0.1); padding: 8px 14px; border-radius: 6px;">
-            <span style="color: #94a3b8; font-size: 12px;">Product Match</span><br>
-            <span style="color: white; font-weight: bold; font-size: 16px;">{confidence*100:.0f}%</span>
-        </div>
-        <div style="background: rgba(255,255,255,0.1); padding: 8px 14px; border-radius: 6px;">
-            <span style="color: #94a3b8; font-size: 12px;">Info Quality</span><br>
-            <span style="color: white; font-weight: bold; font-size: 16px;">{(1-risk)*100:.0f}%</span>
-        </div>
-        <div style="background: rgba(255,255,255,0.1); padding: 8px 14px; border-radius: 6px;">
-            <span style="color: #94a3b8; font-size: 12px;">Context</span><br>
-            <span style="color: white; font-weight: bold; font-size: 16px;">{'✓ Available' if enough_info else '⚠ Limited'}</span>
-        </div>
+        # Build compact confidence banner (always visible at top)
+        confidence_banner = f"""<div style="background: linear-gradient(135deg, #1e3a5f 0%, #2d5a87 100%); border-radius: 8px; padding: 14px 18px; margin-bottom: 16px; font-family: Arial, sans-serif;">
+    <div style="display: flex; align-items: center; flex-wrap: wrap; gap: 12px;">
+        <span style="font-size: 16px;">🤖</span>
+        <span style="color: white; font-weight: bold; font-size: 15px;">AI Draft Response</span>
+        <span style="background: {confidence_color}; color: white; padding: 4px 12px; border-radius: 12px; font-weight: bold; font-size: 13px;">{confidence_label} ({overall_confidence:.0f}%)</span>
+        <span style="color: #94a3b8; font-size: 12px; margin-left: auto;">Product: {confidence*100:.0f}% | Info: {(1-risk)*100:.0f}%</span>
     </div>
 </div>
+"""
+        
+        # Wrap the AI response in a highlighted section (open by default)
+        response_section = f"""
+<details open style="margin-bottom: 16px; border: 2px solid #3b82f6; border-radius: 8px; overflow: hidden;">
+    <summary style="background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%); padding: 12px 16px; cursor: pointer; font-weight: 600; color: #1e40af; display: flex; align-items: center; gap: 8px; user-select: none;">
+        <span style="font-size: 16px;">💬</span>
+        <span>SUGGESTED RESPONSE TO CUSTOMER</span>
+        <span style="margin-left: auto; font-size: 11px; color: #64748b; font-weight: normal;">Copy this to reply</span>
+    </summary>
+    <div style="padding: 16px; background: #ffffff; border-top: 1px solid #bfdbfe;">
+        {html_response}
+    </div>
+</details>
+"""
 
+        # Build collapsible AI analysis details section
+        analysis_details = f"""
+<details style="margin-bottom: 16px; border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden;">
+    <summary style="background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%); padding: 12px 16px; cursor: pointer; font-weight: 600; color: #334155; display: flex; align-items: center; gap: 8px; user-select: none;">
+        <span style="font-size: 16px;">📊</span>
+        <span>AI Analysis Details</span>
+        <span style="margin-left: auto; font-size: 11px; color: #64748b; font-weight: normal;">▼ Click to expand</span>
+    </summary>
+    <div style="padding: 16px; background: #ffffff;">
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px;">
+            <div style="background: #f8fafc; padding: 12px; border-radius: 6px; text-align: center;">
+                <div style="color: #64748b; font-size: 11px; text-transform: uppercase;">Product Match</div>
+                <div style="color: #1e293b; font-weight: bold; font-size: 20px; margin-top: 4px;">{confidence*100:.0f}%</div>
+            </div>
+            <div style="background: #f8fafc; padding: 12px; border-radius: 6px; text-align: center;">
+                <div style="color: #64748b; font-size: 11px; text-transform: uppercase;">Info Quality</div>
+                <div style="color: #1e293b; font-weight: bold; font-size: 20px; margin-top: 4px;">{(1-risk)*100:.0f}%</div>
+            </div>
+            <div style="background: #f8fafc; padding: 12px; border-radius: 6px; text-align: center;">
+                <div style="color: #64748b; font-size: 11px; text-transform: uppercase;">Context</div>
+                <div style="color: #1e293b; font-weight: bold; font-size: 20px; margin-top: 4px;">{'✓' if enough_info else '⚠'}</div>
+            </div>
+            <div style="background: #f8fafc; padding: 12px; border-radius: 6px; text-align: center;">
+                <div style="color: #64748b; font-size: 11px; text-transform: uppercase;">VIP Check</div>
+                <div style="color: #1e293b; font-weight: bold; font-size: 20px; margin-top: 4px;">{'✓' if vip_ok else '❌'}</div>
+            </div>
+        </div>
+        <div style="margin-top: 12px; padding: 10px; background: #f1f5f9; border-radius: 6px; font-size: 12px; color: #475569;">
+            <strong>Category:</strong> {ticket_category} | <strong>Vision Quality:</strong> {vision_quality}
+        </div>
+    </div>
+</details>
 """
         # === Build resource links section (only if product identified with high confidence) ===
         resource_links_html = ""
@@ -875,14 +1045,27 @@ RETRIEVED CONTEXT:
                 product_confidence=product_confidence_for_links
             )
             if resource_links_html:
+                # Wrap resource links in collapsible section
+                resource_links_html = build_collapsible_section(
+                    title="Product Resources & Links",
+                    content=resource_links_html,
+                    icon="🔗",
+                    default_open=False
+                )
                 logger.info(f"{STEP_NAME} | 📎 Added resource links for identified product")
         except Exception as e:
             logger.warning(f"{STEP_NAME} | ⚠️ Failed to get resource links: {e}")
             resource_links_html = ""
         
-        # Combine: confidence header + response + resource links + sources + agent console
-        # Resource links appear below suggested response, above sources
-        response_with_confidence = confidence_header + html_response + resource_links_html + sources_html + build_agent_console_section()
+        # Combine: banner + response section + analysis details + resource links + sources + agent console
+        # Structure:
+        # 1. Compact banner (always visible) - shows confidence at a glance
+        # 2. Response section (open by default) - the actual response to copy
+        # 3. Analysis details (collapsed) - detailed metrics
+        # 4. Resource links (collapsed) - product links
+        # 5. Sources (collapsed) - documents, products, tickets
+        # 6. Agent console button
+        response_with_confidence = confidence_banner + response_section + analysis_details + resource_links_html + sources_html + build_agent_console_section()
 
         duration = time.time() - start_time
         logger.info(f"{STEP_NAME} | ✅ Generated response ({len(response_text)} chars) in {duration:.2f}s")
@@ -907,7 +1090,9 @@ RETRIEVED CONTEXT:
                 "source_products_count": len(source_products),
                 "source_tickets_count": len(source_tickets),
                 "resource_links_added": bool(resource_links_html),
-                "identified_product_model": identified_product.get("model") if identified_product else None
+                "identified_product_model": identified_product.get("model") if identified_product else None,
+                "constraint_validation_passed": constraint_validation_result.get("valid", True) if constraint_validation_result else None,
+                "constraint_warnings_count": len(constraint_warnings) if constraint_warnings else 0,
             },
             llm_response=response_text
         )
@@ -915,6 +1100,7 @@ RETRIEVED CONTEXT:
         return {
             "draft_response": response_with_confidence,
             "overall_confidence": overall_confidence,
+            "constraint_validation_result": constraint_validation_result,
             "audit_events": add_audit_event(
                 state,
                 event="draft_final_response",
@@ -927,6 +1113,8 @@ RETRIEVED CONTEXT:
                     "source_documents_count": len(source_documents),
                     "source_products_count": len(source_products),
                     "source_tickets_count": len(source_tickets),
+                    "constraint_validation_passed": constraint_validation_result.get("valid", True) if constraint_validation_result else None,
+                    "constraint_warnings": constraint_warnings if constraint_warnings else None,
                 },
             )["audit_events"],
         }
