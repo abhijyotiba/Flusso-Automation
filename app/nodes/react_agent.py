@@ -3,6 +3,7 @@ ReACT Agent Node - FIXED VERSION
 Reasoning + Acting Loop with proper context tracking
 Enhanced with Planning Module (Phase 1)
 Enhanced with Ticket Facts (Phase 2)
+Enhanced with Constraint Validation (Phase 3)
 """
 
 import logging
@@ -60,6 +61,18 @@ try:
 except ImportError:
     EVIDENCE_RESOLVER_AVAILABLE = False
     logging.getLogger(__name__).warning("Evidence resolver module not available")
+
+# Constraint validator import (NEW)
+try:
+    from app.services.constraint_validator import (
+        validate_constraints,
+        format_constraints_for_prompt,
+        format_constraints_summary,
+    )
+    CONSTRAINT_VALIDATOR_AVAILABLE = True
+except ImportError:
+    CONSTRAINT_VALIDATOR_AVAILABLE = False
+    logging.getLogger(__name__).warning("Constraint validator not available")
 
 logger = logging.getLogger(__name__)
 STEP_NAME = "🤖 REACT_AGENT"
@@ -453,6 +466,8 @@ def react_agent_loop(state: TicketState) -> Dict[str, Any]:
     planning_updates = {}
     ticket_facts = state.get("ticket_facts", {}) or {}
     ticket_facts_updates = {}
+    constraints_prompt = ""  # NEW: For constraint injection
+    constraint_result = None  # NEW: Store constraint validation result
     
     # Run planner if enabled and available
     planner_enabled = getattr(settings, 'enable_planner', True)
@@ -478,6 +493,12 @@ def react_agent_loop(state: TicketState) -> Dict[str, Any]:
             if execution_plan and execution_plan.get("execution_plan"):
                 plan_context = get_plan_context_for_agent(execution_plan, current_plan_step)
                 
+                # Extract constraint info from execution plan (NEW)
+                if execution_plan.get("_constraint_result"):
+                    constraint_result = execution_plan.get("_constraint_result")
+                    constraints_prompt = execution_plan.get("_constraints_prompt", "")
+                    logger.info(f"{STEP_NAME} | 🔒 Constraints loaded: missing={constraint_result.get('missing_fields', [])}, must_not_ask={len(constraint_result.get('must_not_ask', []))} items")
+                
                 # Store planning results in state updates
                 planning_updates = {
                     "execution_plan": execution_plan,
@@ -492,6 +513,9 @@ def react_agent_loop(state: TicketState) -> Dict[str, Any]:
                     "customer_need_analysis": execution_plan.get("analysis", {}).get("customer_need"),
                     "help_type": execution_plan.get("analysis", {}).get("help_type"),
                     "mentioned_product_model": execution_plan.get("analysis", {}).get("mentioned_product"),
+                    # NEW: Add constraint result to state
+                    "constraint_result": constraint_result,
+                    "constraints_prompt_section": constraints_prompt,
                 }
                 
                 logger.info(f"{STEP_NAME} | ✅ Plan created: {len(execution_plan.get('execution_plan', []))} steps")
@@ -507,6 +531,23 @@ def react_agent_loop(state: TicketState) -> Dict[str, Any]:
             logger.info(f"{STEP_NAME} | Planner module not available")
         elif not planner_enabled:
             logger.info(f"{STEP_NAME} | Planner disabled in settings")
+    
+    # If no constraints from planner, try to generate them directly (NEW)
+    if not constraint_result and CONSTRAINT_VALIDATOR_AVAILABLE:
+        try:
+            ticket_category = state.get("ticket_category", "") or "general"
+            result = validate_constraints(
+                ticket_facts=ticket_facts,
+                ticket_category=ticket_category,
+                product_text=ticket_text[:500]
+            )
+            constraint_result = result.to_dict()
+            constraints_prompt = format_constraints_for_prompt(result)
+            planning_updates["constraint_result"] = constraint_result
+            planning_updates["constraints_prompt_section"] = constraints_prompt
+            logger.info(f"{STEP_NAME} | 🔒 Direct constraints: {format_constraints_summary(result)}")
+        except Exception as e:
+            logger.warning(f"{STEP_NAME} | ⚠️ Direct constraint validation failed: {e}")
     
     # Log ticket_facts summary for debugging
     if ticket_facts:
@@ -642,6 +683,16 @@ NOTE: You may deviate from the plan based on tool results. The plan is a guide, 
             agent_context = agent_context.replace(
                 "═══════════════════════════════════════════════════════════════════════\n📊 PREVIOUS ITERATIONS",
                 plan_section + "\n═══════════════════════════════════════════════════════════════════════\n📊 PREVIOUS ITERATIONS"
+            )
+        
+        # ========================================
+        # INJECT CONSTRAINTS (Phase 3 Enhancement - NEW)
+        # ========================================
+        if constraints_prompt:
+            # Insert constraints right before PREVIOUS ITERATIONS
+            agent_context = agent_context.replace(
+                "═══════════════════════════════════════════════════════════════════════\n📊 PREVIOUS ITERATIONS",
+                constraints_prompt + "\n═══════════════════════════════════════════════════════════════════════\n📊 PREVIOUS ITERATIONS"
             )
         
         try:

@@ -217,6 +217,28 @@ class TicketState(TypedDict, total=False):
     info_request_response: Optional[str]          # Customer-facing message asking for more info
     evidence_decision: Optional[str]              # "ACCEPT_OCR", "ACCEPT_VISION", "REQUIRES_INFO", etc.
     missing_requirements: List[str]               # Missing info for return/replacement (PO, photo, address)
+    
+    # ==========================================
+    # CONSTRAINT VALIDATION (from constraint_validator)
+    # ==========================================
+    constraint_result: Optional[Dict[str, Any]]   # Full result from constraint_validator
+    # Structure:
+    # {
+    #   "original_category": str,
+    #   "resolved_category": str,
+    #   "missing_fields": List[str],         # Fields that are required but missing
+    #   "required_asks": List[str],          # Customer-friendly ask messages
+    #   "present_fields": List[str],         # Fields that ARE present
+    #   "must_not_ask": List[str],           # What NOT to ask for (already provided)
+    #   "applicable_policies": List[str],    # Policy keys that apply
+    #   "policy_citations": List[Dict],      # {policy_id, name, citation}
+    #   "required_citations": List[str],     # Citation text that MUST appear
+    #   "conditional_fields": Dict[str,str], # Fields that might be needed
+    #   "can_proceed": bool,                 # Whether we have minimum info
+    #   "blocking_missing": List[str],       # Critical missing fields
+    #   "validation_notes": List[str],       # Notes from validation
+    # }
+    constraints_prompt_section: Optional[str]     # Formatted constraints for LLM prompt
 
     # ==========================================
     # PRODUCT / DECISION METRICS

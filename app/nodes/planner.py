@@ -3,6 +3,7 @@ Ticket Analysis & Planning Module
 Analyzes ticket and creates structured execution plan BEFORE tool calls.
 Integrates with policy service for policy-aware planning.
 Now also VERIFIES ticket_facts from ticket_extractor node.
+Integrates with constraint_validator for requirement enforcement.
 """
 
 import logging
@@ -15,6 +16,19 @@ from app.services.policy_service import get_relevant_policy, get_policy_for_cate
 from app.config.settings import settings
 from app.utils.audit import add_audit_event
 from app.nodes.ticket_extractor import update_ticket_facts, get_model_candidates_from_facts
+
+# Import constraint validator
+try:
+    from app.services.constraint_validator import (
+        validate_constraints,
+        format_constraints_for_prompt,
+        format_constraints_summary,
+        ConstraintResult,
+    )
+    CONSTRAINT_VALIDATOR_AVAILABLE = True
+except ImportError:
+    CONSTRAINT_VALIDATOR_AVAILABLE = False
+    logging.getLogger(__name__).warning("Constraint validator not available")
 
 logger = logging.getLogger(__name__)
 STEP_NAME = "🧠 PLANNER"
@@ -664,6 +678,24 @@ def create_execution_plan(state: TicketState) -> Dict[str, Any]:
     ticket_facts_summary = _format_ticket_facts_for_planner(state)
     logger.info(f"{STEP_NAME} | Ticket facts available: {bool(state.get('ticket_facts'))}")
     
+    # Step 3.5: Run constraint validation (NEW)
+    constraint_result = None
+    constraints_prompt = ""
+    if CONSTRAINT_VALIDATOR_AVAILABLE:
+        try:
+            ticket_facts = state.get("ticket_facts", {}) or {}
+            constraint_result = validate_constraints(
+                ticket_facts=ticket_facts,
+                ticket_category=category or quick_category,
+                product_text=text[:500]  # Pass some ticket text for product keyword matching
+            )
+            constraints_prompt = format_constraints_for_prompt(constraint_result)
+            logger.info(f"{STEP_NAME} | 🔒 Constraints: {format_constraints_summary(constraint_result)}")
+        except Exception as e:
+            logger.warning(f"{STEP_NAME} | ⚠️ Constraint validation failed: {e}")
+            constraint_result = None
+            constraints_prompt = ""
+    
     # Step 4: Build prompt
     prompt = PLANNING_PROMPT.format(
         subject=subject,
@@ -724,6 +756,11 @@ def create_execution_plan(state: TicketState) -> Dict[str, Any]:
             "policy_section_used": policy_result.get("primary_section_name"),
             "quick_category": quick_category
         }
+        
+        # Add constraint validation results (NEW)
+        if constraint_result:
+            response["_constraint_result"] = constraint_result.to_dict()
+            response["_constraints_prompt"] = constraints_prompt
         
         return response
         
