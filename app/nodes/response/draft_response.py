@@ -300,14 +300,14 @@ def build_sources_html(
     # Wrap all sections in a collapsible sources container
     sources_content = ''.join(sections)
     sources_html = f"""
-    <div style="margin-top: 24px; padding-top: 20px; border-top: 2px solid #e5e7eb;">
-        <details style="border: 1px solid #cbd5e1; border-radius: 8px; overflow: hidden;">
-            <summary style="background: linear-gradient(135deg, #374151 0%, #4b5563 100%); padding: 14px 18px; cursor: pointer; font-weight: bold; color: white; display: flex; align-items: center; gap: 10px; user-select: none;">
-                <span style="font-size: 18px;">📎</span>
-                <span style="font-size: 15px;">SOURCES & REFERENCES</span>
-                <span style="margin-left: auto; font-size: 12px; color: #d1d5db; font-weight: normal;">▼ Click to view AI source data</span>
+    <div style="margin-top: 16px;">
+        <details style="margin-bottom: 16px; border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden;">
+            <summary style="background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%); padding: 12px 16px; cursor: pointer; font-weight: 600; color: #1e293b; display: flex; align-items: center; gap: 8px; user-select: none;">
+                <span style="font-size: 16px;">📎</span>
+                <span>Sources & References</span>
+                <span style="margin-left: auto; font-size: 12px; color: #64748b;">Click to expand</span>
             </summary>
-            <div style="padding: 16px; background: #fafafa;">
+            <div style="padding: 16px; background: #ffffff;">
                 {sources_content}
             </div>
         </details>
