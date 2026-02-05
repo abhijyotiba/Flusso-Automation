@@ -202,33 +202,42 @@ def format_resources_html(resources: ProductResources) -> str:
     
     if resources.spec_sheet_url:
         doc_links.append(f'''
-            <a href="{resources.spec_sheet_url}" target="_blank" rel="noopener noreferrer" 
-               style="display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px; 
-                      background: #f0f9ff; border: 1px solid #0ea5e9; border-radius: 6px; 
-                      text-decoration: none; color: #0369a1; font-size: 13px; margin: 4px;
-                      font-weight: 500;">
-                📄 Spec Sheet
-            </a>''')
+            <div style="display: flex; align-items: center; gap: 10px; margin: 6px 0;">
+                <a href="{resources.spec_sheet_url}" target="_blank" rel="noopener noreferrer" 
+                   style="display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; 
+                          background: #f0f9ff; border: 1px solid #0ea5e9; border-radius: 6px; 
+                          text-decoration: none; color: #0369a1; font-size: 12px;
+                          font-weight: 500; white-space: nowrap;">
+                    📄 Spec Sheet
+                </a>
+                <code style="background: #f1f5f9; padding: 4px 8px; border-radius: 4px; font-size: 11px; color: #475569; word-break: break-all; max-width: 350px; overflow: hidden; text-overflow: ellipsis;">{resources.spec_sheet_url}</code>
+            </div>''')
     
     if resources.install_manual_url:
         doc_links.append(f'''
-            <a href="{resources.install_manual_url}" target="_blank" rel="noopener noreferrer" 
-               style="display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px; 
-                      background: #f0fdf4; border: 1px solid #22c55e; border-radius: 6px; 
-                      text-decoration: none; color: #166534; font-size: 13px; margin: 4px;
-                      font-weight: 500;">
-                📘 Installation Manual
-            </a>''')
+            <div style="display: flex; align-items: center; gap: 10px; margin: 6px 0;">
+                <a href="{resources.install_manual_url}" target="_blank" rel="noopener noreferrer" 
+                   style="display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; 
+                          background: #f0fdf4; border: 1px solid #22c55e; border-radius: 6px; 
+                          text-decoration: none; color: #166534; font-size: 12px;
+                          font-weight: 500; white-space: nowrap;">
+                    📘 Installation Manual
+                </a>
+                <code style="background: #f1f5f9; padding: 4px 8px; border-radius: 4px; font-size: 11px; color: #475569; word-break: break-all; max-width: 350px; overflow: hidden; text-overflow: ellipsis;">{resources.install_manual_url}</code>
+            </div>''')
     
     if resources.parts_diagram_url:
         doc_links.append(f'''
-            <a href="{resources.parts_diagram_url}" target="_blank" rel="noopener noreferrer" 
-               style="display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px; 
-                      background: #fef3c7; border: 1px solid #f59e0b; border-radius: 6px; 
-                      text-decoration: none; color: #92400e; font-size: 13px; margin: 4px;
-                      font-weight: 500;">
-                🔧 Parts Diagram
-            </a>''')
+            <div style="display: flex; align-items: center; gap: 10px; margin: 6px 0;">
+                <a href="{resources.parts_diagram_url}" target="_blank" rel="noopener noreferrer" 
+                   style="display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; 
+                          background: #fef3c7; border: 1px solid #f59e0b; border-radius: 6px; 
+                          text-decoration: none; color: #92400e; font-size: 12px;
+                          font-weight: 500; white-space: nowrap;">
+                    🔧 Parts Diagram
+                </a>
+                <code style="background: #f1f5f9; padding: 4px 8px; border-radius: 4px; font-size: 11px; color: #475569; word-break: break-all; max-width: 350px; overflow: hidden; text-overflow: ellipsis;">{resources.parts_diagram_url}</code>
+            </div>''')
     
     if doc_links:
         sections.append(f'''
@@ -236,7 +245,7 @@ def format_resources_html(resources: ProductResources) -> str:
             <div style="font-weight: 600; color: #374151; margin-bottom: 8px; font-size: 13px;">
                 📁 Documents:
             </div>
-            <div style="display: flex; flex-wrap: wrap; gap: 4px;">
+            <div style="display: flex; flex-direction: column;">
                 {''.join(doc_links)}
             </div>
         </div>''')
@@ -246,33 +255,42 @@ def format_resources_html(resources: ProductResources) -> str:
     
     if resources.install_video_url:
         video_links.append(f'''
-            <a href="{resources.install_video_url}" target="_blank" rel="noopener noreferrer" 
-               style="display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px; 
-                      background: #fef2f2; border: 1px solid #ef4444; border-radius: 6px; 
-                      text-decoration: none; color: #dc2626; font-size: 13px; margin: 4px;
-                      font-weight: 500;">
-                🎬 Installation Video
-            </a>''')
+            <div style="display: flex; align-items: center; gap: 10px; margin: 6px 0;">
+                <a href="{resources.install_video_url}" target="_blank" rel="noopener noreferrer" 
+                   style="display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; 
+                          background: #fef2f2; border: 1px solid #ef4444; border-radius: 6px; 
+                          text-decoration: none; color: #dc2626; font-size: 12px;
+                          font-weight: 500; white-space: nowrap;">
+                    🎬 Installation Video
+                </a>
+                <code style="background: #f1f5f9; padding: 4px 8px; border-radius: 4px; font-size: 11px; color: #475569; word-break: break-all; max-width: 350px; overflow: hidden; text-overflow: ellipsis;">{resources.install_video_url}</code>
+            </div>''')
     
     if resources.operational_video_url:
         video_links.append(f'''
-            <a href="{resources.operational_video_url}" target="_blank" rel="noopener noreferrer" 
-               style="display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px; 
-                      background: #f5f3ff; border: 1px solid #8b5cf6; border-radius: 6px; 
-                      text-decoration: none; color: #7c3aed; font-size: 13px; margin: 4px;
-                      font-weight: 500;">
-                ▶️ Product Demo
-            </a>''')
+            <div style="display: flex; align-items: center; gap: 10px; margin: 6px 0;">
+                <a href="{resources.operational_video_url}" target="_blank" rel="noopener noreferrer" 
+                   style="display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; 
+                          background: #f5f3ff; border: 1px solid #8b5cf6; border-radius: 6px; 
+                          text-decoration: none; color: #7c3aed; font-size: 12px;
+                          font-weight: 500; white-space: nowrap;">
+                    ▶️ Product Demo
+                </a>
+                <code style="background: #f1f5f9; padding: 4px 8px; border-radius: 4px; font-size: 11px; color: #475569; word-break: break-all; max-width: 350px; overflow: hidden; text-overflow: ellipsis;">{resources.operational_video_url}</code>
+            </div>''')
     
     if resources.lifestyle_video_url:
         video_links.append(f'''
-            <a href="{resources.lifestyle_video_url}" target="_blank" rel="noopener noreferrer" 
-               style="display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px; 
-                      background: #fdf4ff; border: 1px solid #d946ef; border-radius: 6px; 
-                      text-decoration: none; color: #a21caf; font-size: 13px; margin: 4px;
-                      font-weight: 500;">
-                🎥 Lifestyle Video
-            </a>''')
+            <div style="display: flex; align-items: center; gap: 10px; margin: 6px 0;">
+                <a href="{resources.lifestyle_video_url}" target="_blank" rel="noopener noreferrer" 
+                   style="display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; 
+                          background: #fdf4ff; border: 1px solid #d946ef; border-radius: 6px; 
+                          text-decoration: none; color: #a21caf; font-size: 12px;
+                          font-weight: 500; white-space: nowrap;">
+                    🎥 Lifestyle Video
+                </a>
+                <code style="background: #f1f5f9; padding: 4px 8px; border-radius: 4px; font-size: 11px; color: #475569; word-break: break-all; max-width: 350px; overflow: hidden; text-overflow: ellipsis;">{resources.lifestyle_video_url}</code>
+            </div>''')
     
     if video_links:
         sections.append(f'''
@@ -280,7 +298,7 @@ def format_resources_html(resources: ProductResources) -> str:
             <div style="font-weight: 600; color: #374151; margin-bottom: 8px; font-size: 13px;">
                 🎬 Videos:
             </div>
-            <div style="display: flex; flex-wrap: wrap; gap: 4px;">
+            <div style="display: flex; flex-direction: column;">
                 {''.join(video_links)}
             </div>
         </div>''')
@@ -288,13 +306,14 @@ def format_resources_html(resources: ProductResources) -> str:
     # === PRODUCT PAGE ===
     if resources.product_page_url:
         sections.append(f'''
-        <div>
+        <div style="display: flex; align-items: center; gap: 10px; margin: 6px 0;">
             <a href="{resources.product_page_url}" target="_blank" rel="noopener noreferrer" 
-               style="display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px; 
+               style="display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; 
                       background: #1e3a5f; border-radius: 6px; text-decoration: none; 
-                      color: white; font-size: 13px; font-weight: 500;">
+                      color: white; font-size: 12px; font-weight: 500; white-space: nowrap;">
                 🌐 View Product Page
             </a>
+            <code style="background: #f1f5f9; padding: 4px 8px; border-radius: 4px; font-size: 11px; color: #475569; word-break: break-all; max-width: 350px; overflow: hidden; text-overflow: ellipsis;">{resources.product_page_url}</code>
         </div>''')
     
     if not sections:

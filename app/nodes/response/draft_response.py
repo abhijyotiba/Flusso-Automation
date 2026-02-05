@@ -1057,15 +1057,15 @@ RETRIEVED CONTEXT:
             logger.warning(f"{STEP_NAME} | ⚠️ Failed to get resource links: {e}")
             resource_links_html = ""
         
-        # Combine: banner + response section + analysis details + resource links + sources + agent console
+        # Combine: banner + response section + resource links + sources + agent console
         # Structure:
         # 1. Compact banner (always visible) - shows confidence at a glance
         # 2. Response section (open by default) - the actual response to copy
-        # 3. Analysis details (collapsed) - detailed metrics
-        # 4. Resource links (collapsed) - product links
-        # 5. Sources (collapsed) - documents, products, tickets
-        # 6. Agent console button
-        response_with_confidence = confidence_banner + response_section + analysis_details + resource_links_html + sources_html + build_agent_console_section()
+        # 3. Resource links (collapsed) - product links
+        # 4. Sources (collapsed) - documents, products, tickets
+        # 5. Agent console button
+        # NOTE: analysis_details removed from output (not useful to agents) but variable kept for logging
+        response_with_confidence = confidence_banner + response_section + resource_links_html + sources_html + build_agent_console_section()
 
         duration = time.time() - start_time
         logger.info(f"{STEP_NAME} | ✅ Generated response ({len(response_text)} chars) in {duration:.2f}s")
