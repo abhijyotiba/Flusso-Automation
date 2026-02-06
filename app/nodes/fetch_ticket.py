@@ -110,6 +110,10 @@ def fetch_ticket_from_freshdesk(state: TicketState) -> Dict[str, Any]:
         # ============================================================
         document_attachments = []
         for att in raw_attachments:
+            # Skip None or invalid attachment entries (Freshdesk API quirk)
+            if att is None or not isinstance(att, dict):
+                logger.warning(f"{STEP_NAME} | ⚠️ Skipping invalid attachment entry (None or not dict)")
+                continue
             content_type = str(att.get("content_type", "")).lower()
             if not content_type.startswith("image/"):
                 # Keep full attachment object with URL
