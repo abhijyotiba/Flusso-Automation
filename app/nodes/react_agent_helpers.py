@@ -22,6 +22,9 @@ from app.tools.attachment_classifier_tool import attachment_type_classifier_tool
 from app.tools.multimodal_document_analyzer import multimodal_document_analyzer_tool
 from app.tools.ocr_image_analyzer import ocr_image_analyzer_tool
 
+# Spare Parts Pricing Tool (for replacement parts not in main catalog)
+from app.tools.spare_parts_pricing_tool import spare_parts_pricing_tool, spare_parts_variants_tool
+
 logger = logging.getLogger(__name__)
 
 
@@ -810,7 +813,66 @@ def _execute_tool(
                 return output, f"Image analysis failed: {output.get('error', 'Unknown error')}"
         
         # -----------------------------------------------------------
-        # 9. FINISH TOOL
+        # 9. SPARE PARTS PRICING TOOL
+        # -----------------------------------------------------------
+        elif action == "spare_parts_pricing_tool":
+            logger.info(f"[TOOL_EXEC] Executing spare_parts_pricing_tool")
+            
+            output = _run_langchain_tool(spare_parts_pricing_tool, action_input or {})
+            tool_results["spare_parts_pricing"] = output
+            
+            if output.get("success"):
+                parts = output.get("parts", [])
+                count = len(parts)
+                method = output.get("search_method", "unknown")
+                summary = output.get("summary", "")
+                
+                obs = f"💰 SPARE PARTS PRICING ({method}): Found {count} part(s).\n\n"
+                
+                if summary:
+                    obs += summary + "\n"
+                
+                # Note about parts without pricing
+                parts_without_price = [p for p in parts if not p.get("has_price")]
+                if parts_without_price:
+                    obs += f"\n⚠️ {len(parts_without_price)} part(s) have price not set - contact sales for current pricing.\n"
+                
+                # Flag obsolete parts
+                obsolete_parts = [p for p in parts if p.get("is_obsolete")]
+                if obsolete_parts:
+                    obs += f"\n🚫 {len(obsolete_parts)} part(s) marked as OBSOLETE.\n"
+                
+                logger.info(f"[TOOL_EXEC] ✅ Spare parts: {count} found via {method}")
+                return output, obs
+            else:
+                suggestions = output.get("suggestions", [])
+                message = output.get("message", "Part not found")
+                obs = f"❌ {message}"
+                if suggestions:
+                    obs += f"\n\n🔍 Did you mean: {', '.join(suggestions[:3])}?"
+                return output, obs
+        
+        # -----------------------------------------------------------
+        # 9b. SPARE PARTS VARIANTS TOOL
+        # -----------------------------------------------------------
+        elif action == "spare_parts_variants_tool":
+            logger.info(f"[TOOL_EXEC] Executing spare_parts_variants_tool")
+            
+            output = _run_langchain_tool(spare_parts_variants_tool, action_input or {})
+            tool_results["spare_parts_variants"] = output
+            
+            if output.get("success"):
+                variants = output.get("variants", [])
+                summary = output.get("summary", "")
+                obs = f"🎨 SPARE PARTS VARIANTS: Found {len(variants)} finish option(s).\n\n"
+                if summary:
+                    obs += summary
+                return output, obs
+            else:
+                return output, f"No variants found: {output.get('message')}"
+        
+        # -----------------------------------------------------------
+        # 10. FINISH TOOL
         # -----------------------------------------------------------
         elif action == "finish_tool":
             logger.info(f"[TOOL_EXEC] Executing finish_tool")
@@ -839,7 +901,8 @@ def _populate_legacy_fields(
     identified_product: Dict = None,
     product_confidence: float = 0.0,
     gemini_answer: str = "",
-    vision_products: List[Dict] = None
+    vision_products: List[Dict] = None,
+    spare_parts_pricing: Dict[str, Any] = None
 ) -> Dict[str, Any]:
     """
     Populate legacy RAG result fields for compatibility with existing nodes.
@@ -849,6 +912,7 @@ def _populate_legacy_fields(
                         These are shown in the "Visual Matches" section.
                         Products from text-based search (product_catalog_tool) 
                         should NOT be shown in Visual Matches.
+        spare_parts_pricing: Result from spare_parts_pricing_tool with part prices.
     """
     
     # Normalize and validate inputs
@@ -951,6 +1015,28 @@ def _populate_legacy_fields(
                 f"{i}. Ticket #{ticket_id} ({resolution_type}) - Similarity: {score:.2f}\n{content}\n"
             )
     
+    # === SPARE PARTS PRICING SECTION ===
+    if spare_parts_pricing and spare_parts_pricing.get("success"):
+        parts = spare_parts_pricing.get("parts", [])
+        if parts:
+            context_sections.append("\n### 💰 SPARE PARTS PRICING FOUND")
+            context_sections.append(f"Search method: {spare_parts_pricing.get('search_method', 'unknown')}")
+            for part in parts[:10]:  # Limit to 10 parts
+                part_num = part.get("part_number", "Unknown")
+                price = part.get("price", "N/A")
+                has_price = part.get("has_price", True)
+                is_obsolete = part.get("is_obsolete", False)
+                
+                if is_obsolete:
+                    context_sections.append(f"  • {part_num}: OBSOLETE - no longer available")
+                elif not has_price:
+                    context_sections.append(f"  • {part_num}: Price not set - contact sales for current pricing")
+                else:
+                    context_sections.append(f"  • {part_num}: {price}")
+            
+            # Add clear instruction for response generation
+            context_sections.append("\n**IMPORTANT**: Include the above spare part pricing in your response to the customer.")
+    
     multimodal_context = "\n".join(context_sections) if context_sections else "No relevant context found."
     if not multimodal_context or len(multimodal_context.strip()) < 50:
         logger.warning("Multimodal context is empty or too short!")
@@ -998,10 +1084,12 @@ def _populate_legacy_fields(
     has_docs = len(text_retrieval_results) > 0
     has_images = len(image_retrieval_results) > 0
     has_product = identified_product is not None
-    enough_info = has_docs or has_images or has_product
+    has_spare_parts_pricing = spare_parts_pricing and spare_parts_pricing.get("success") and spare_parts_pricing.get("parts")
+    enough_info = has_docs or has_images or has_product or has_spare_parts_pricing
     
     logger.info(f"[LEGACY_FIELDS] Populated: docs={len(text_retrieval_results)}, "
                 f"images={len(image_retrieval_results)}, tickets={len(past_ticket_results)}, "
+                f"spare_parts={'yes' if has_spare_parts_pricing else 'no'}, "
                 f"context_len={len(multimodal_context)}, enough_info={enough_info}")
     
     return {
@@ -1021,7 +1109,10 @@ def _populate_legacy_fields(
         "hallucination_risk": max(0.0, 1.0 - product_confidence) if product_confidence > 0 else 0.3,
         "ran_vision": True,
         "ran_text_rag": True,
-        "ran_past_tickets": True
+        "ran_past_tickets": True,
+        # Spare parts pricing flag for draft_response
+        "spare_parts_pricing_found": has_spare_parts_pricing,
+        "spare_parts_pricing_data": spare_parts_pricing if has_spare_parts_pricing else None
     }
 
 

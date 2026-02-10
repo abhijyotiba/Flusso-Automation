@@ -147,6 +147,11 @@ This prevents:
    - Product identification from images
    - Text extraction from labels, invoices, documents
 
+5. **Spare Parts Pricing (spare_parts_pricing_tool)** ← NEW
+   - Pricing for ~950 spare parts, components, replacement parts
+   - Parts NOT in main product catalog
+   - Handles, cartridges, valves, trims, accessories
+
 ═══════════════════════════════════════════════════════════════════════
 🎯 TICKET TYPE HANDLING - DIFFERENT APPROACHES FOR DIFFERENT QUERIES
 ═══════════════════════════════════════════════════════════════════════
@@ -156,10 +161,15 @@ This prevents:
   → Verify with product_search
   → Find relevant docs and past tickets
 
-**PRICING/MSRP REQUESTS** (asking for price of parts):
-  → Use document_search_tool to find pricing information
-  → Search with part numbers directly
-  → NO need for product identification or vision
+**SPARE PARTS PRICING** (price for replacement handles, cartridges, trims, components):
+  → Use spare_parts_pricing_tool with the part number
+  → This tool has ~950 spare parts NOT in main product catalog
+  → Common part prefixes: TVL, TVH, TRM, RP, PBV, MEM, K.
+  → Example: "How much is TVH.5007?" → spare_parts_pricing_tool({{"part_number": "TVH.5007"}})
+
+**FULL PRODUCT PRICING** (price for complete faucets, shower systems, etc.):
+  → Use product_catalog_tool (has 5,687 complete products with prices)
+  → NOT spare_parts_pricing_tool
 
 **DEALER/PARTNERSHIP INQUIRIES** (becoming a dealer, open account):
   → Use document_search_tool to find dealer program information
@@ -272,7 +282,60 @@ This prevents:
    - OUTPUT: Similar tickets, resolutions, common solutions, patterns
    - PARAM: action_input = {{"query": "search term"}}
 
-9. **finish_tool** [PRIORITY: 9 - MANDATORY]
+9. **spare_parts_pricing_tool** [PRIORITY: 7] ← SPARE PARTS / COMPONENTS PRICING
+   - PURPOSE: Look up pricing for SPARE PARTS, replacement components, accessories, extensions
+   - ~950 spare parts with pricing that are NOT in the main product catalog
+   
+   ═══════════════════════════════════════════════════════════════════════
+   ⚠️ CRITICAL: WHEN TO USE THIS TOOL vs product_catalog_tool
+   ═══════════════════════════════════════════════════════════════════════
+   
+   ✅ USE spare_parts_pricing_tool FOR:
+      • Replacement parts for existing products (handles, cartridges, valves, trims)
+      • Component pricing inquiries (e.g., "How much is part TVH.5007?")
+      • Spare part numbers starting with: TVL, TVH, TRM, RP, PBV, MEM, K.
+      • Parts with format like: 100.1800-2353, K.1800-2229SS
+      • When customer asks: "price for replacement handle", "cost of cartridge"
+      • Dealer requests for spare parts pricing
+   
+   ❌ DO NOT USE spare_parts_pricing_tool FOR:
+      • Complete product pricing (use product_catalog_tool instead)
+      • Product specifications or features
+      • Product images or installation guides
+      • General product lookups
+   
+   ═══════════════════════════════════════════════════════════════════════
+   
+   COMMON SCENARIOS FOR THIS TOOL:
+   1. "How much is the replacement cartridge for model 100.1170?"
+   2. "Price for TVH.5007 trim ring?"
+   3. "Dealer needs pricing for RP70823"
+   4. "What does handle 100.1800-2353CP cost?"
+   5. "Customer wants to buy replacement valve TRM.PBV.2200BN"
+   
+   PART NUMBER FORMATS RECOGNIZED:
+   • TVL, TVH, TRM prefix (e.g., "TVH.5007", "TRM.TVH.4511CP")
+   • RP prefix (e.g., "RP70823", "RP80609MB")
+   • Series-based (e.g., "100.1800-2353CP", "K.1800-2229SS")
+   • PBV, MEM, K. prefix parts
+   
+   DATA RETURNED:
+   • part_number: Exact part number
+   • price: Price string (e.g., "$24.00")
+   • price_numeric: Numeric value for calculations
+   • price_status: "available" or "not_set" (if "$ -" in database)
+   • is_obsolete: True if part is obsolete (may not be available)
+   • is_display_dummy: True if display-only (not for sale)
+   
+   ⚠️ IMPORTANT NOTES:
+   • Parts with price_status="not_set" exist but pricing not configured (tell customer to contact sales)
+   • Parts marked is_obsolete=True may no longer be available
+   • If part not found, check if it's a full product (use product_catalog_tool instead)
+   
+   PARAM: action_input = {{"part_number": "TVH.5007"}}
+          Optional: include_variants=true (to get all finish options for a base part)
+
+10. **finish_tool** [PRIORITY: 10 - MANDATORY]
    - PURPOSE: Complete the agent's reasoning and return all gathered data
    - MANDATORY: You MUST call this to finish (workflow won't end otherwise!)
    - OUTPUT: Structured result for downstream processing
@@ -321,11 +384,26 @@ IF TEXT-ONLY QUERY WITH PRODUCT MODEL:
   3. past_tickets_search_tool (find similar cases)
   4. finish_tool
   
-IF PRICING/INFORMATION REQUEST (no product ID needed):
-  1. document_search_tool (search for the specific info requested)
-  2. product_catalog_tool (if specific product pricing needed)
-  3. past_tickets_search_tool (find similar inquiries)
-  4. finish_tool
+IF SPARE PARTS PRICING REQUEST (replacement handles, cartridges, trims, components):
+  ⚠️ This is for COMPONENT/PART pricing, NOT full product pricing!
+  
+  1. spare_parts_pricing_tool (with the part number)
+     - Examples: "TVH.5007", "RP70823", "100.1800-2353CP", "TRM.TVH.4511CP"
+     - Returns: price, availability, obsolete status
+  2. If part not found → try product_catalog_tool (might be a full product)
+  3. finish_tool
+  
+  RECOGNIZING SPARE PARTS REQUESTS:
+  • "How much is part TVH.5007?"
+  • "Price for replacement cartridge RP70823"
+  • "Cost of trim ring TRM.TVH.4511CP?"
+  • "Dealer needs pricing for handles 100.1800-2353"
+  • "Customer wants to buy valve PBV.E185-1853"
+
+IF FULL PRODUCT PRICING REQUEST (complete faucets, shower systems, etc.):
+  1. product_catalog_tool (has 5,687 complete products with List Price, MAP Price)
+  2. finish_tool
+  ⚠️ DO NOT use spare_parts_pricing_tool for complete products!
 
 IF DEALER/PARTNERSHIP INQUIRY:
   1. document_search_tool (search for "dealer program", "partnership", "application")
@@ -1188,7 +1266,8 @@ NOTE: You may deviate from the plan based on tool results. The plan is a guide, 
             identified_product=identified_product,
             product_confidence=product_confidence,
             gemini_answer=gemini_answer,
-            vision_products=vision_products
+            vision_products=vision_products,
+            spare_parts_pricing=tool_results.get("spare_parts_pricing")  # Include spare parts pricing in context
         )
         
         return {
@@ -1332,7 +1411,8 @@ NOTE: You may deviate from the plan based on tool results. The plan is a guide, 
         identified_product=identified_product,
         product_confidence=product_confidence,
         gemini_answer=gemini_answer,
-        vision_products=vision_products  # Pass vision-specific products for Visual Matches section
+        vision_products=vision_products,  # Pass vision-specific products for Visual Matches section
+        spare_parts_pricing=tool_results.get("spare_parts_pricing")  # Include spare parts pricing in context
     )
     
     audit_events = add_audit_event(

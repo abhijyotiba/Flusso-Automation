@@ -117,6 +117,12 @@ class Settings(BaseSettings):
     # ==========================================
     agent_console_url: str  # URL for agent console button (required in .env)
     
+    # ==========================================
+    # SPARE PARTS PRICING (Google Drive)
+    # ==========================================
+    spare_parts_sheet_file_id: Optional[str] = None  # Google Drive file ID for spare parts spreadsheet
+    spare_parts_refresh_hours: int = 24  # How often to refresh spare parts cache
+    
     def validate_all(self) -> None:
         """Validate critical settings with comprehensive checks"""
         errors = []
