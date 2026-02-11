@@ -136,16 +136,15 @@ def update_freshdesk_ticket(state: TicketState) -> Dict[str, Any]:
         unresolved = status in [
             ResolutionStatus.AI_UNRESOLVED.value,
             ResolutionStatus.LOW_CONFIDENCE_MATCH.value,
-            ResolutionStatus.VIP_RULE_FAILURE.value,
         ]
 
         if unresolved:
-            # Private note with review needed flag
-            note_text = f"🤖 AI Review Needed\n\nStatus: {status}\n\n{reply_text}"
+            # Private note with review needed flag - prepend status since response already has header
+            note_text = f"⚠️ Status: {status}\n\n{reply_text}" if reply_text else f"⚠️ Status: {status}\n\nNo response generated - manual review required."
             logger.info(f"{STEP_NAME} | 📝 Adding PRIVATE note (needs human review)")
         else:
-            # Private note with draft response for agent to review and send
-            note_text = f"🤖 AI Draft Response\n\n{reply_text}"
+            # Private note - response already contains confidence banner header
+            note_text = reply_text if reply_text else "🤖 AI processing completed - see tags for status."
             logger.info(f"{STEP_NAME} | 📝 Adding PRIVATE note (AI draft for agent review)")
 
         note_start = time.time()

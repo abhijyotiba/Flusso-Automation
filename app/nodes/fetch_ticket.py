@@ -46,12 +46,13 @@ def fetch_ticket_from_freshdesk(state: TicketState) -> Dict[str, Any]:
 
     try:
         client = get_freshdesk_client()
-        ticket = client.get_ticket(ticket_id, params={"include": "company,stats"})
+        # Include "requester" to get email for dealer domain matching
+        ticket = client.get_ticket(ticket_id, params={"include": "requester,company,stats"})
         data = client.extract_ticket_data(ticket)
 
         # Check if already processed
         existing_tags = data.get("tags", [])
-        ai_processed_tags = ["AI_PROCESSED", "AI_UNRESOLVED", "LOW_CONFIDENCE_MATCH", "VIP_RULE_FAILURE"]
+        ai_processed_tags = ["AI_PROCESSED", "AI_UNRESOLVED", "LOW_CONFIDENCE_MATCH"]
         
         already_processed = any(tag in existing_tags for tag in ai_processed_tags)
         if already_processed:

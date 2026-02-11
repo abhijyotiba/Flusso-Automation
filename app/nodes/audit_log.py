@@ -82,7 +82,6 @@ def write_audit_log(state: TicketState) -> Dict[str, Any]:
             "enough_information": state.get("enough_information"),
             "hallucination_risk": state.get("hallucination_risk"),
             "product_confidence": state.get("product_match_confidence"),
-            "vip_compliant": state.get("vip_compliant"),
         },
         "retrieval_counts": {
             "text_hits": len(text_results),

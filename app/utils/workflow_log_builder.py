@@ -112,7 +112,7 @@ def _build_metrics(state: TicketState) -> Dict[str, Any]:
         "overall_confidence": round(state.get("overall_confidence", 0.0), 3),
         "hallucination_risk": round(state.get("hallucination_risk", 0.0), 3),
         "product_confidence": round(state.get("product_match_confidence", 0.0), 3),
-        "vip_compliant": state.get("vip_compliant", False),
+        "customer_type": state.get("customer_type", "END_CUSTOMER"),
         "enough_information": state.get("enough_information", False),
         "needs_more_info": state.get("needs_more_info", False),
         "vision_matches": len(state.get("image_retrieval_results", []) or []),

@@ -401,9 +401,8 @@ async def get_workflow_info():
             "routing",
             "react_agent (loops with evidence_resolver)",
             "customer_lookup",
-            "vip_rules",
+            "customer_rules",
             "draft_response",
-            "vip_compliance",
             "resolution_logic",
             "freshdesk_update",
             "audit_log"

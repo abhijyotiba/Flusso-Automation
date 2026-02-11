@@ -179,11 +179,13 @@ async def run_workflow_on_ticket(ticket_id: int, mode: str = "react"):
             # Print gathered resources
             print_gathered_resources(final_state)
         
-        # Print VIP info
-        customer_type = final_state.get("customer_type", "regular")
+        # Print Customer Type info
+        customer_type = final_state.get("customer_type", "END_CUSTOMER")
         print(f"\n👤 Customer Type: {customer_type}")
-        if customer_type == "vip":
-            print("   ⭐ VIP customer - special handling applied")
+        if customer_type == "DEALER":
+            print("   🏢 Dealer customer - full policy access")
+        else:
+            print("   👤 End customer - limited disclosure")
         
         # Print confidence metrics
         print(f"\n📊 CONFIDENCE METRICS:")
@@ -191,7 +193,6 @@ async def run_workflow_on_ticket(ticket_id: int, mode: str = "react"):
         print(f"   Product Confidence: {final_state.get('product_match_confidence', 0):.0%}")
         print(f"   Hallucination Risk: {final_state.get('hallucination_risk', 0):.0%}")
         print(f"   Enough Information: {'Yes' if final_state.get('enough_information', False) else 'No'}")
-        print(f"   VIP Compliant: {'Yes' if final_state.get('vip_compliant', True) else 'No'}")
             
         # Print draft response
         draft = final_state.get("draft_response") or final_state.get("generated_reply")

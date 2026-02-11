@@ -11,17 +11,22 @@ class ResolutionStatus(str, Enum):
     RESOLVED = "RESOLVED"
     AI_UNRESOLVED = "AI_UNRESOLVED"
     LOW_CONFIDENCE_MATCH = "LOW_CONFIDENCE_MATCH"
-    VIP_RULE_FAILURE = "VIP_RULE_FAILURE"
     NEEDS_MORE_INFO = "NEEDS_MORE_INFO"  # Evidence resolver requested more info from customer
     SKIPPED = "SKIPPED"  # For PO/auto-reply tickets
 
 
 class CustomerType(str, Enum):
-    """Customer classification types"""
-    VIP = "VIP"
-    DISTRIBUTOR = "DISTRIBUTOR"
-    NORMAL = "NORMAL"
-    INTERNAL = "INTERNAL"
+    """
+    Customer classification types.
+    
+    DEALER: Purchased directly from Flusso, has an approved account, PO numbers and invoices.
+            Subject to all dealer-only policies. Can process returns, see policy docs.
+            
+    END_CUSTOMER: Purchased from a Flusso-authorized dealer.
+                  Cannot return directly to Flusso. Limited policy disclosure.
+    """
+    DEALER = "DEALER"
+    END_CUSTOMER = "END_CUSTOMER"
 
 
 class TicketCategory(str, Enum):
@@ -304,21 +309,8 @@ Where:
 - 0.6-0.8 = Correct category and likely correct product, minor uncertainty
 - 0.9-1.0 = Clear, confident product identification with matching category"""
 
-VIP_COMPLIANCE_PROMPT = """You are a VIP rule compliance checker.
-
-Given the customer request, VIP rules, and available product/warranty information, determine if the requested action complies with VIP rules.
-
-VIP rules may include:
-- Extended warranty periods
-- Free replacement allowances
-- Priority shipping
-- Price matching guarantees
-
-Respond ONLY with valid JSON in this exact format:
-{
-  "vip_compliant": true/false,
-  "reason": "<brief explanation>"
-}"""
+# REMOVED: VIP_COMPLIANCE_PROMPT - vip_compliance node has been removed
+# Customer type rules (DEALER vs END_CUSTOMER) are now handled directly in draft_response
 
 DRAFT_RESPONSE_PROMPT = """You are an AI assistant helping human support agents respond to customer tickets for a plumbing fixtures company.
 
@@ -478,7 +470,6 @@ Write your COMPLETE response in the structured format above. The sources will be
 SYSTEM_TAGS = [
     "AI_UNRESOLVED",
     "LOW_CONFIDENCE_MATCH",
-    "VIP_RULE_FAILURE",
     "AI_PROCESSED",
     "NEEDS_HUMAN_REVIEW",
     "PO_RECEIVED",           # For purchase order tickets

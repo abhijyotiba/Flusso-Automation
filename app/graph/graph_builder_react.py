@@ -15,9 +15,8 @@ from app.nodes.ticket_extractor import extract_ticket_facts  # NEW: Ticket facts
 from app.nodes.routing_agent import classify_ticket_category
 from app.nodes.react_agent import react_agent_loop  # NEW
 from app.nodes.customer_lookup import identify_customer_type
-from app.nodes.vip_rules import load_vip_rules
-# REMOVED: hallucination_guard and confidence_check (redundant - evidence_resolver handles this)
-from app.nodes.decisions.vip_compliance import verify_vip_compliance
+from app.nodes.customer_rules import load_customer_rules
+# REMOVED: hallucination_guard, confidence_check, vip_compliance (obsolete - using customer_rules now)
 from app.nodes.response.draft_response import draft_final_response
 from app.nodes.response.resolution_logic import decide_tags_and_resolution
 from app.nodes.freshdesk_update import update_freshdesk_ticket
@@ -118,7 +117,7 @@ def build_react_graph() -> StateGraph:
     
     Simplified flow:
     fetch_ticket → ticket_extractor → routing → [skip_handler OR react_agent] → 
-    customer_lookup → vip_rules → decisions → draft_response → 
+    customer_lookup → customer_rules → draft_response → 
     resolution_logic → freshdesk_update → audit_log
     """
     logger.info("[GRAPH_BUILDER] Building ReACT-based workflow...")
@@ -138,11 +137,10 @@ def build_react_graph() -> StateGraph:
     graph.add_node("react_agent", react_agent_loop)
     
     graph.add_node("customer_lookup", identify_customer_type)
-    graph.add_node("vip_rules", load_vip_rules)
+    graph.add_node("customer_rules", load_customer_rules)
     
-    # REMOVED: hallucination_guard and confidence_check
-    # Evidence resolver (in react_agent) now handles confidence assessment
-    graph.add_node("vip_compliance", verify_vip_compliance)
+    # REMOVED: hallucination_guard, confidence_check, vip_compliance
+    # customer_rules now handles DEALER vs END_CUSTOMER rules directly in draft_response
     
     graph.add_node("draft_response", draft_final_response)
     graph.add_node("resolution_logic", decide_tags_and_resolution)
@@ -172,18 +170,14 @@ def build_react_graph() -> StateGraph:
     
     # ReACT agent → customer lookup (gather customer context)
     graph.add_edge("react_agent", "customer_lookup")
-    graph.add_edge("customer_lookup", "vip_rules")
+    graph.add_edge("customer_lookup", "customer_rules")
     
-    # After VIP rules → generate response (simplified flow)
-    # REMOVED: hallucination_guard and confidence_check edges
-    # Evidence resolver confidence is used directly
-    graph.add_edge("vip_rules", "draft_response")
+    # After customer rules → generate response (simplified flow)
+    # customer_rules contains DEALER/END_CUSTOMER rules used by draft_response
+    graph.add_edge("customer_rules", "draft_response")
     
-    # After response generation → VIP compliance check
-    graph.add_edge("draft_response", "vip_compliance")
-    
-    # VIP compliance → resolution logic
-    graph.add_edge("vip_compliance", "resolution_logic")
+    # After response generation → resolution logic (REMOVED: vip_compliance node)
+    graph.add_edge("draft_response", "resolution_logic")
     # Final chain
     graph.add_edge("resolution_logic", "freshdesk_update")
     graph.add_edge("freshdesk_update", "audit_log")

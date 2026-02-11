@@ -183,7 +183,7 @@ class TicketState(TypedDict, total=False):
     # ==========================================
     customer_type: Optional[str]
     customer_metadata: Dict[str, Any]
-    vip_rules: Dict[str, Any]
+    customer_rules: Dict[str, Any]  # Dealer/End Customer business rules from customer_rules.py
 
     # ==========================================
     # RAG RESULTS
@@ -247,7 +247,6 @@ class TicketState(TypedDict, total=False):
     product_match_confidence: float
     hallucination_risk: float
     enough_information: bool
-    vip_compliant: bool
     overall_confidence: float  # Combined confidence score (0-100%)
 
     # ==========================================

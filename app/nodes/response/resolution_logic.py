@@ -1,6 +1,6 @@
 """
 Resolution Logic Node
-Determines final status and tags based on evidence resolver and VIP compliance.
+Determines final status and tags based on evidence resolver analysis.
 Simplified: Uses evidence_resolver's confidence instead of separate hallucination/confidence nodes.
 """
 
@@ -60,7 +60,7 @@ def decide_tags_and_resolution(state: TicketState) -> Dict[str, Any]:
         }
 
     enough_info = state.get("enough_information", False)
-    vip_ok = state.get("vip_compliant", True)
+    customer_type = state.get("customer_type", "END_CUSTOMER")
     
     # Get evidence resolver decision (primary source of truth)
     needs_more_info = state.get("needs_more_info", False)
@@ -81,7 +81,7 @@ def decide_tags_and_resolution(state: TicketState) -> Dict[str, Any]:
     logger.info(f"{STEP_NAME} |   - enough_information: {enough_info}")
     logger.info(f"{STEP_NAME} |   - product_confidence: {confidence:.2f} (threshold: {settings.product_confidence_threshold})")
     logger.info(f"{STEP_NAME} |   - derived_risk: {risk:.2f}")
-    logger.info(f"{STEP_NAME} |   - vip_compliant: {vip_ok}")
+    logger.info(f"{STEP_NAME} |   - customer_type: {customer_type}")
 
     tags: List[str] = list(state.get("extra_tags", []) or [])
     draft = state.get("draft_response", "") or ""
@@ -112,13 +112,6 @@ def decide_tags_and_resolution(state: TicketState) -> Dict[str, Any]:
         decision_reason = f"low product confidence ({confidence:.2f} < {settings.product_confidence_threshold})"
         logger.info(f"{STEP_NAME} | ⚠️ Status: LOW_CONFIDENCE_MATCH - {decision_reason}")
 
-    # Priority 3: VIP rule failure
-    elif not vip_ok:
-        status = ResolutionStatus.VIP_RULE_FAILURE.value
-        tags.extend(["VIP_RULE_FAILURE", "NEEDS_HUMAN_REVIEW"])
-        decision_reason = "VIP compliance check failed"
-        logger.info(f"{STEP_NAME} | ⚠️ Status: VIP_RULE_FAILURE - {decision_reason}")
-
     # All checks passed - can mark as resolved
     else:
         status = ResolutionStatus.RESOLVED.value
@@ -146,7 +139,7 @@ def decide_tags_and_resolution(state: TicketState) -> Dict[str, Any]:
             "evidence_confidence": evidence_confidence,
             "enough_info": enough_info,
             "product_confidence": confidence,
-            "vip_compliant": vip_ok,
+            "customer_type": customer_type,
         },
     )["audit_events"]
 

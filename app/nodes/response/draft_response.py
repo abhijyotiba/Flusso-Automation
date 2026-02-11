@@ -332,6 +332,118 @@ def build_agent_console_section() -> str:
     """
 
 
+def _build_customer_type_guidance(customer_type: str, customer_rules: Dict[str, Any], ticket_facts: Dict[str, Any] = None) -> str:
+    """
+    Build LLM guidance section based on customer type (DEALER vs END_CUSTOMER).
+    
+    This injects the appropriate disclosure rules and response tone into the prompt
+    so the LLM generates a response appropriate for the customer type.
+    
+    Also includes context-aware guidance based on ticket_facts (e.g., if PO is present,
+    don't ask for PO dates since we can look them up internally).
+    """
+    if not customer_rules:
+        return ""
+    
+    customer_label = customer_rules.get("customer_type_label", customer_type)
+    disclosure = customer_rules.get("disclosure", {})
+    returns_rules = customer_rules.get("returns", {})
+    response_tone = customer_rules.get("response_tone", {})
+    tracking_rules = customer_rules.get("tracking", {})
+    
+    # Build disclosure restrictions
+    disclosure_guidance = []
+    if not disclosure.get("can_share_policy_docs", True):
+        disclosure_guidance.append("❌ DO NOT share dealer-only policy documents")
+    if not disclosure.get("can_share_restocking_details", True):
+        disclosure_guidance.append("❌ DO NOT mention restocking fees or percentages")
+    if not disclosure.get("can_share_dealer_pricing", True):
+        disclosure_guidance.append("❌ DO NOT share dealer pricing information")
+    if not disclosure.get("can_mention_account_status", True):
+        disclosure_guidance.append("❌ DO NOT mention account status (credit hold, declined card, etc.)")
+    
+    # Build returns guidance
+    returns_guidance = ""
+    if not returns_rules.get("allowed", True):
+        redirect_to = returns_rules.get("redirect_to", "dealer")
+        message = returns_rules.get("message", f"Returns must be handled through your authorized {redirect_to}.")
+        returns_guidance = f"""
+📦 RETURNS POLICY:
+- This customer CANNOT return products directly to Flusso
+- Response: "{message}"
+"""
+    elif returns_rules.get("allowed"):
+        restocking = returns_rules.get("restocking_fees", {})
+        returns_guidance = f"""
+📦 RETURNS POLICY (DEALER):
+- Returns are allowed: unused, uninstalled items only
+- Restocking fees: 0-45 days = 15%, 45-90 days = 25%, 91-180 days = 50%, >180 days = no returns
+- RGA required, freight paid by dealer
+- Can share full return policy details
+"""
+    
+    # Build tracking guidance
+    tracking_guidance = ""
+    if customer_type == "DEALER":
+        self_service_url = tracking_rules.get("self_service_url", "https://flussodealers.com/orderstatus/")
+        tracking_guidance = f"""
+📍 TRACKING/ORDER STATUS (DEALER):
+- Direct to self-service portal: {self_service_url}
+- Can provide dealer account number
+- Can reference PO numbers and full order details
+"""
+    else:
+        tracking_guidance = """
+📍 TRACKING/ORDER STATUS (END CUSTOMER):
+- Can share tracking if shipped
+- NEVER mention account status or credit holds
+- If order seems delayed, refer to dealer without explaining why
+"""
+    
+    # === PO PRESENT - CRITICAL RULE (applies to ALL customer types) ===
+    # If a PO number is in the ticket, Flusso can look up all details internally
+    # We should NEVER ask for dates/details that we already have access to
+    has_po = ticket_facts.get("has_po", False) if ticket_facts else False
+    if has_po:
+        tracking_guidance += """
+⚠️ PO NUMBER PRESENT IN TICKET - CRITICAL RULE:
+- ❌ DO NOT ask for purchase date, order date, delivery date, or PO details
+- ❌ DO NOT ask "when was this purchased?" or "can you confirm the order date?"
+- ❌ DO NOT ask for invoice date, ship date, or any date related to the PO
+- ✅ PO details (dates, quantities, items, pricing) are available in Flusso's internal system
+- ✅ Human agents can look up ALL PO information internally
+- The customer would be confused if asked for dates we already have access to
+- Simply proceed with the request - dates can be verified internally by the agent
+"""
+    
+    # Build tone guidance
+    formality = response_tone.get("formality", "professional")
+    salutation = response_tone.get("salutation", "customer")
+    
+    # Combine all guidance
+    disclosure_text = "\n".join(disclosure_guidance) if disclosure_guidance else "✅ Full disclosure allowed"
+    
+    return f"""
+═══════════════════════════════════════════════════════════════════════
+👤 CUSTOMER TYPE: {customer_label.upper()}
+═══════════════════════════════════════════════════════════════════════
+
+🔒 DISCLOSURE RULES:
+{disclosure_text}
+
+{returns_guidance}
+{tracking_guidance}
+
+💬 RESPONSE TONE:
+- Formality: {formality}
+- Address as: {salutation}
+
+⚠️ IMPORTANT: Follow the disclosure rules above. Violating these rules 
+could share confidential dealer information with end customers.
+═══════════════════════════════════════════════════════════════════════
+"""
+
+
 def draft_final_response(state: TicketState) -> Dict[str, Any]:
     """
     Generate final response to customer.
@@ -512,6 +624,10 @@ def draft_final_response(state: TicketState) -> Dict[str, Any]:
     subject = state.get("ticket_subject", "") or ""
     context = state.get("multimodal_context", "") or ""
     ticket_category = state.get("ticket_category", "general") or "general"
+    
+    # === CUSTOMER RULES (DEALER vs END_CUSTOMER) ===
+    customer_rules = state.get("customer_rules", {}) or {}
+    customer_type = state.get("customer_type", "END_CUSTOMER") or "END_CUSTOMER"
 
     # Get evidence resolver analysis for confidence metrics
     evidence_analysis = state.get("evidence_analysis", {})
@@ -522,7 +638,6 @@ def draft_final_response(state: TicketState) -> Dict[str, Any]:
     confidence = state.get("product_match_confidence", evidence_confidence)
     # Derive risk from evidence confidence (low confidence = higher risk)
     risk = max(0.0, 1.0 - confidence) if confidence > 0 else state.get("hallucination_risk", 0.3)
-    vip_ok = state.get("vip_compliant", True)
     
     # Vision quality metrics
     vision_quality = state.get("vision_match_quality", "NO_MATCH")
@@ -651,10 +766,10 @@ def draft_final_response(state: TicketState) -> Dict[str, Any]:
         "ticket_text_length": len(ticket_text),
         "context_length": len(context),
         "ticket_category": ticket_category,
+        "customer_type": customer_type,
         "enough_info": enough_info,
         "evidence_confidence": evidence_confidence,
         "product_confidence": confidence,
-        "vip_compliant": vip_ok,
         "vision_quality": vision_quality,
         "source_documents_count": len(source_documents),
         "source_products_count": len(source_products),
@@ -662,7 +777,7 @@ def draft_final_response(state: TicketState) -> Dict[str, Any]:
     }
     
     logger.info(f"{STEP_NAME} | 📥 Input: subject='{subject[:50]}...', category={ticket_category}, context_len={len(context)}")
-    logger.info(f"{STEP_NAME} | 📊 Metrics: enough_info={enough_info}, confidence={confidence:.2f}, evidence_conf={evidence_confidence:.2f}, vip_ok={vip_ok}")
+    logger.info(f"{STEP_NAME} | 📊 Metrics: enough_info={enough_info}, confidence={confidence:.2f}, evidence_conf={evidence_confidence:.2f}, customer_type={customer_type}")
     logger.info(f"{STEP_NAME} | 🖼 Vision: quality={vision_quality}")
     logger.info(f"{STEP_NAME} | 📎 Sources: docs={len(source_documents)}, products={len(source_products)}, tickets={len(source_tickets)}")
 
@@ -800,6 +915,11 @@ highlighting the affected area?"
 INCORRECT response: "Please re-send the photo as it did not come through on our end."
 ═══════════════════════════════════════════════════════════════════════
 """
+
+    # === BUILD CUSTOMER TYPE RULES GUIDANCE ===
+    # Get ticket_facts to provide context-aware guidance (e.g., PO presence)
+    ticket_facts = state.get("ticket_facts", {}) or {}
+    customer_type_guidance = _build_customer_type_guidance(customer_type, customer_rules, ticket_facts)
     
     meta = f"""
 TODAY'S DATE: {current_date} ({current_date_readable})
@@ -807,13 +927,14 @@ Use this date for ALL date comparisons. Any date before {current_date} is in the
 Date format is MM-DD-YYYY.
 
 TICKET CATEGORY: {ticket_category}
+CUSTOMER TYPE: {customer_type}
 {category_guidance}
+{customer_type_guidance}
 
 DECISION METRICS:
 - Enough Information: {enough_info}
 - Hallucination Risk: {risk:.2f}
 - Product Confidence: {confidence:.2f}
-- VIP Compliant: {vip_ok}
 - Vision Match Quality: {vision_quality}
 {vision_guidance}
 {image_analysis_guidance}
@@ -980,11 +1101,16 @@ RETRIEVED CONTEXT:
         )
         
         # Build compact confidence banner (always visible at top)
+        # Customer type badge styling
+        customer_badge_color = "#10b981" if customer_type == "DEALER" else "#6366f1"  # Green for dealer, indigo for end customer
+        customer_badge_label = "🏢 DEALER" if customer_type == "DEALER" else "👤 END CUSTOMER"
+        
         confidence_banner = f"""<div style="background: linear-gradient(135deg, #1e3a5f 0%, #2d5a87 100%); border-radius: 8px; padding: 14px 18px; margin-bottom: 16px; font-family: Arial, sans-serif;">
     <div style="display: flex; align-items: center; flex-wrap: wrap; gap: 12px;">
         <span style="font-size: 16px;">🤖</span>
         <span style="color: white; font-weight: bold; font-size: 15px;">AI Draft Response</span>
         <span style="background: {confidence_color}; color: white; padding: 4px 12px; border-radius: 12px; font-weight: bold; font-size: 13px;">{confidence_label} ({overall_confidence:.0f}%)</span>
+        <span style="background: {customer_badge_color}; color: white; padding: 4px 10px; border-radius: 12px; font-weight: 600; font-size: 12px;">{customer_badge_label}</span>
         <span style="color: #94a3b8; font-size: 12px; margin-left: auto;">Product: {confidence*100:.0f}% | Info: {(1-risk)*100:.0f}%</span>
     </div>
 </div>
@@ -1027,8 +1153,8 @@ RETRIEVED CONTEXT:
                 <div style="color: #1e293b; font-weight: bold; font-size: 20px; margin-top: 4px;">{'✓' if enough_info else '⚠'}</div>
             </div>
             <div style="background: #f8fafc; padding: 12px; border-radius: 6px; text-align: center;">
-                <div style="color: #64748b; font-size: 11px; text-transform: uppercase;">VIP Check</div>
-                <div style="color: #1e293b; font-weight: bold; font-size: 20px; margin-top: 4px;">{'✓' if vip_ok else '❌'}</div>
+                <div style="color: #64748b; font-size: 11px; text-transform: uppercase;">Customer Type</div>
+                <div style="color: #1e293b; font-weight: bold; font-size: 14px; margin-top: 4px;">{customer_type}</div>
             </div>
         </div>
         <div style="margin-top: 12px; padding: 10px; background: #f1f5f9; border-radius: 6px; font-size: 12px; color: #475569;">

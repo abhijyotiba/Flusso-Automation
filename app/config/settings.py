@@ -123,6 +123,12 @@ class Settings(BaseSettings):
     spare_parts_sheet_file_id: Optional[str] = None  # Google Drive file ID for spare parts spreadsheet
     spare_parts_refresh_hours: int = 24  # How often to refresh spare parts cache
     
+    # ==========================================
+    # DEALER DOMAINS (Google Drive)
+    # ==========================================
+    dealer_domains_sheet_file_id: Optional[str] = None  # Google Drive file ID for dealer domains spreadsheet
+    dealer_domains_refresh_hours: int = 24  # How often to refresh dealer domains cache
+    
     def validate_all(self) -> None:
         """Validate critical settings with comprehensive checks"""
         errors = []
