@@ -81,12 +81,22 @@ REQUIREMENTS_MATRIX: Dict[str, Dict[str, Any]] = {
                 "reason": "To show the intermittent problem occurring"
             }
         },
-        "policies": ["warranty_standard"],
+        # NOTE: Default to lifetime_warranty (for homeowners). Product-specific policies will override:
+        # - hose_warranty (1 year) for hoses, hand-helds, drains
+        # - lifetime_warranty for cartridges, faucets, valves
+        "policies": ["lifetime_warranty"],
         "product_specific_policies": {
             "hose": "hose_warranty",
             "supply_line": "hose_warranty",
             "supply line": "hose_warranty",
             "braided": "hose_warranty",
+            "hand-held": "hose_warranty",
+            "handheld": "hose_warranty",
+            "hand spray": "hose_warranty",
+            "drain": "hose_warranty",
+            "cartridge": "lifetime_warranty",
+            "faucet": "lifetime_warranty",
+            "valve": "lifetime_warranty",
         },
         "description": "Customer claiming warranty for defective product"
     },
@@ -107,10 +117,17 @@ REQUIREMENTS_MATRIX: Dict[str, Dict[str, Any]] = {
                 "reason": "For shipping replacement parts"
             }
         },
-        "policies": ["warranty_standard"],
+        # NOTE: Default to lifetime_warranty (for homeowners). Product-specific policies will override.
+        "policies": ["lifetime_warranty"],
         "product_specific_policies": {
             "hose": "hose_warranty",
             "supply_line": "hose_warranty",
+            "hand-held": "hose_warranty",
+            "handheld": "hose_warranty",
+            "drain": "hose_warranty",
+            "cartridge": "lifetime_warranty",
+            "faucet": "lifetime_warranty",
+            "valve": "lifetime_warranty",
         },
         "description": "Customer reporting product defect or malfunction"
     },
@@ -150,8 +167,16 @@ REQUIREMENTS_MATRIX: Dict[str, Dict[str, Any]] = {
                 "reason": "To identify the correct replacement part"
             }
         },
-        "policies": ["warranty_standard"],
-        "product_specific_policies": {},
+        # NOTE: Default to lifetime_warranty. Product-specific policies will override.
+        "policies": ["lifetime_warranty"],
+        "product_specific_policies": {
+            "hose": "hose_warranty",
+            "supply_line": "hose_warranty",
+            "hand-held": "hose_warranty",
+            "drain": "hose_warranty",
+            "cartridge": "lifetime_warranty",
+            "faucet": "lifetime_warranty",
+        },
         "description": "Customer requesting replacement parts"
     },
     

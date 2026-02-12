@@ -51,151 +51,221 @@ POLICY_CATEGORIES = {
 # LOCAL FALLBACK POLICY
 # ===============================
 LOCAL_FALLBACK_POLICY = """
-# Flusso Kitchen & Bath - Policy & Process Guide
+# FLUSSO FAUCETS - OFFICIAL WARRANTY POLICY & PROCESSING LOGIC
 
-## 1. WARRANTY CLAIMS
+## 1️⃣ WARRANTY SCOPE & ELIGIBILITY
 
-### 1.1 Warranty Coverage
-- Standard warranty: 1 year from purchase date
-- Extended warranty (VIP customers): 2 years
-- Lifetime warranty products: Check product specifications
+### Eligible Products
+Warranty applies ONLY to:
+- Flusso products purchased after January 1, 2011
+- Purchased directly from Flusso or an authorized Flusso dealer
+- Installed in the United States or Canada
 
-### 1.2 Required Documents for Warranty Claim
-- ✅ Proof of purchase (receipt/invoice) - MANDATORY
-- ✅ Product model number
-- ✅ Photos of defect (recommended)
-- ✅ Purchase date must be within warranty period
-
-### 1.3 Warranty Process
-1. Verify product model and purchase date
-2. Confirm defect is covered (not misuse/normal wear)
-3. If approved: Send replacement part OR full product replacement
-4. If denied: Explain reason clearly, offer paid alternatives
-
-### 1.4 NOT Covered Under Warranty
-- Cosmetic damage (scratches, discoloration from cleaning products)
-- Normal wear and tear
-- Damage from improper installation
-- Products without valid proof of purchase
-- Products purchased from unauthorized dealers
+### Eligible Purchaser
+- Original consumer purchaser ONLY
+- Warranty is NON-TRANSFERABLE
 
 ---
 
-## 2. RETURNS & REFUNDS
+## 2️⃣ WARRANTY PERIODS (AUTHORITATIVE STRUCTURE)
 
-### 2.1 Return Policy Timeline
+⚠️ THERE ARE ONLY THREE VALID WARRANTY DURATIONS IN THE SYSTEM:
+
+### A. Homeowners (Residential Use) → LIFETIME
+Valid for as long as:
+- The original purchaser owns the product
+- The product remains installed in the original residence
+This functions as a LIFETIME WARRANTY for qualifying homeowners.
+
+### B. Commercial / Business Use → 2 YEARS
+- Warranty period: 2 years from original purchase date
+- Applies to: Commercial installations, business properties, non-residential use
+
+### C. Limited-Warranty Components → 1 YEAR ONLY
+The following components are covered for 1 YEAR ONLY, regardless of residential or commercial use:
+- Drain assemblies
+- Bathroom hoses
+- Hand-helds
+- Kitchen hand sprays
+- Kitchen hoses
+
+⚠️ This list is EXPLICIT and CLOSED.
+If a component is NOT listed above, it does NOT fall under the 1-year limitation.
+
+---
+
+## 3️⃣ CARTRIDGE COVERAGE CLARIFICATION
+
+⚠️ CRITICAL: Cartridges are NOT listed under limited 1-year components.
+
+Therefore:
+- Residential homeowner → LIFETIME coverage
+- Commercial use → 2-year coverage
+
+❌ There is NO 1-year cartridge limitation.
+❌ There is NO "extended warranty" structure.
+❌ There is NO "standard 1-year warranty" for cartridges.
+
+---
+
+## 4️⃣ WARRANTY INTENT — REPAIR-FIRST POLICY
+
+The primary objective of the warranty is:
+- To RESTORE the product to proper working order
+- NOT automatic full replacement
+
+Warranty coverage provides:
+- Replacement of defective PARTS
+- Replacement of defective FINISHES
+- Parts are provided FREE OF CHARGE during the applicable warranty period
+
+Full product replacement:
+- Is RARE
+- Is determined SOLELY by Flusso
+- Is NOT automatic
+
+---
+
+## 5️⃣ WARRANTY REQUIREMENTS
+
+The following are REQUIRED for evaluation:
+- ✅ Proof of purchase (invoice number is sufficient)
+- ✅ Description of the issue
+- ✅ Video evidence (PREFERRED)
+- ✅ Photos only if the issue cannot be clearly demonstrated via video
+- ✅ Completion of required troubleshooting steps (MANDATORY prior to approval)
+
+---
+
+## 6️⃣ INSTALLED PRODUCTS
+
+Installed products:
+- ❌ Are NOT eligible for return
+- ✅ Must be handled STRICTLY through the warranty process
+
+---
+
+## 7️⃣ WARRANTY EXCLUSIONS
+
+Warranty does NOT cover damage caused by:
+
+### Installation & Usage
+- Improper installation
+- Product misuse or abuse
+- Failure to use the product in its entirety
+
+### Cleaning Damage
+- Abrasive cleaners
+- Alcohol-based cleaners
+- Organic solvents
+
+### Unauthorized Service
+- Installation or servicing by unauthorized or unqualified individuals
+
+---
+
+## 8️⃣ THIRD-PARTY & UNAUTHORIZED PARTS
+
+Under Magnuson-Moss compliance:
+- Use of third-party parts does NOT automatically void the warranty
+
+However:
+- Failures caused by improperly installed, incompatible, or unauthorized components are NOT covered
+- Affected portions of the warranty become inapplicable
+- Use of genuine Flusso parts is STRONGLY recommended
+
+---
+
+## 9️⃣ UNAUTHORIZED SELLERS
+
+Warranty does NOT apply to products purchased from unauthorized sellers.
+
+---
+
+## 🔟 COMPONENT-LEVEL WARRANTY RESOLUTION
+
+Common repairable issues include:
+- Cartridge issues
+- Leaking hoses
+- Finish defects on handles
+- Aerator issues
+- Loose spout, hoses, or handles
+
+Standard resolution:
+- Replace the DEFECTIVE COMPONENT ONLY
+- Full unit replacement is RARE and internal determination only
+
+---
+
+## 11️⃣ AI ENFORCEMENT RULES (STRICT)
+
+### The AI must NEVER:
+- ❌ Invent a "standard 1-year full warranty"
+- ❌ Mention a "2-year extended warranty"
+- ❌ Create a "VIP warranty"
+- ❌ Assign 2-year coverage to hoses
+- ❌ Override limited component duration
+- ❌ Default to full product replacement
+- ❌ Ask for "original purchase date" when invoice number is provided
+
+### ONLY valid durations in the system are:
+- ✅ Lifetime (qualifying homeowner)
+- ✅ 2 years (commercial use)
+- ✅ 1 year (explicit limited components ONLY: drains, hoses, hand-helds, hand sprays)
+
+⚠️ NO OTHER DURATIONS EXIST.
+
+---
+
+## RETURNS & REFUNDS
+
+### Return Policy Timeline
 | Days Since Purchase | Restocking Fee |
 |---------------------|----------------|
-| 0-45 days           | 15%            |
-| 46-90 days          | 25%            |
-| 91-180 days         | 50%            |
+| 0–45 days           | 15%            |
+| 46–90 days          | 25%            |
+| 91–180 days         | 50%            |
 | 180+ days           | No returns accepted |
 
-### 2.2 Required for Returns
+### Required for Returns
 - ✅ Original packaging (unopened preferred, opened accepted with fee)
 - ✅ RGA number (Return Goods Authorization) - MUST REQUEST FIRST
-- ✅ Proof of purchase with date
+- ✅ Proof of purchase
 - ❌ Custom/special orders are NOT returnable
 - ❌ Clearance/final sale items are NOT returnable
-
-### 2.3 Return Process
-1. Customer requests RGA via email/ticket
-2. Verify purchase date and calculate applicable fee
-3. Issue RGA number with return instructions
-4. Customer ships product back (customer pays return shipping)
-5. Receive and inspect product
-6. Process refund minus restocking fee within 5-7 business days
+- ❌ Installed products are NOT returnable
 
 ---
 
-## 3. REPLACEMENT PARTS
+## MISSING PARTS (FROM NEW ORDERS)
 
-### 3.1 Free Replacement Parts (Under Warranty)
-- Must be within warranty period
-- Must have valid proof of purchase
-- Only for defective parts (not lost/damaged by user)
-- We ship free, customer does not pay
-
-### 3.2 Paid Replacement Parts (Out of Warranty)
-- Available for all products regardless of purchase date
-- Customer pays part cost + shipping
-- No proof of purchase required
-- Check availability before promising
-
-### 3.3 Process for Replacement Parts
-1. Identify product model number accurately
-2. Identify specific part needed (use parts diagrams if available)
-3. Check warranty status with proof of purchase
-4. If under warranty: Ship replacement free
-5. If not under warranty: Quote price, get approval, process
-
----
-
-## 4. MISSING PARTS (FROM NEW ORDERS)
-
-### 4.1 Policy
-- Must report within 30 days of delivery
+### Policy
+- Must report within 45 days of delivery
 - Free replacement, no questions asked
 - Need order number/PO number
 
-### 4.2 Process
+### Process
 1. Verify order number in system
 2. Confirm what parts are missing (use packing list)
-3. Ship missing parts immediately via expedited shipping
+3. Ship missing parts immediately
 4. No receipt needed - we have the order record
-5. Apologize for inconvenience
 
 ---
 
-## 5. ESCALATION RULES
+## ⚠️ MANDATORY REQUIREMENTS FOR WARRANTY CLAIMS
 
-### 5.1 When to Escalate to Human Agent
-- Customer disputes warranty decision
-- Damage claims over $500 value
-- Legal threats or lawyer mentions
-- VIP customer complaints (flag for priority)
-- Unusual/complex multi-product situations
-- Customer requests supervisor/manager
-
-### 5.2 VIP Customer Special Rules
-- Always approve reasonable warranty claims
-- Free shipping on ALL replacements (even paid parts)
-- Extended return window: 90 days full refund (no restocking fee)
-- Priority response required (same day if possible)
-- Can override standard policies with manager approval note
-
----
-
-## 6. ⚠️ MANDATORY REQUIREMENTS FOR ALL RETURNS/REPLACEMENTS
-
-### 6.1 BEFORE Processing ANY Return, Replacement, or Warranty Claim
-The BOT/Agent MUST always request and verify the following information BEFORE approving or processing:
-
-1. ✅ **PO/Purchase Order Number** - REQUIRED
-   - If not provided, ask: "Can you please provide your Purchase Order number or proof of purchase?"
-   
+### BEFORE Processing ANY Warranty Claim:
+1. ✅ **Proof of Purchase** - REQUIRED (invoice number is sufficient)
 2. ✅ **Video/Photo of the Issue** - REQUIRED for defective products
-   - If not provided, ask: "Can you send us a video or photo showing the issue with the product?"
-   - This helps verify the defect before shipping replacements
-   
 3. ✅ **Shipping Address** - REQUIRED for replacements
-   - If not provided, ask: "What address should we send the replacement to?"
+4. ✅ **Troubleshooting Completion** - REQUIRED before approval
 
-### 6.2 Example Response Template
-When ANY of the above is missing, respond with:
-```
-We're happy to help! To process your request, we need a few more details:
-- [If missing: Your Purchase Order number or proof of purchase]
-- [If missing: A video or photo showing the issue with the product]
-- [If missing: The shipping address where you'd like the replacement sent]
-
-Once we receive this information, we can proceed with your [return/replacement/warranty claim].
-```
-
-### 6.3 NEVER DO THE FOLLOWING
-- ❌ DO NOT approve a replacement without PO/proof of purchase
-- ❌ DO NOT ship replacements without a confirmed shipping address
-- ❌ DO NOT process warranty claims for defective products without photo/video evidence
+### NEVER DO THE FOLLOWING:
+- ❌ DO NOT approve replacement without proof of purchase
+- ❌ DO NOT ship replacements without confirmed shipping address
+- ❌ DO NOT process warranty claims without photo/video evidence
+- ❌ DO NOT assume information - always ask if not explicitly provided
+- ❌ DO NOT invent warranty durations that don't exist
 - ❌ DO NOT assume information - always ask if not explicitly provided
 """
 

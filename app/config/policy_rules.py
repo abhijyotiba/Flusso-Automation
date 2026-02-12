@@ -36,51 +36,58 @@ POLICY_RULES: Dict[str, Dict[str, Any]] = {
     # =========================================================================
     # WARRANTY POLICIES
     # =========================================================================
+    # NOTE: Per rules.txt Section 8.b:
+    # - Homeowners: Lifetime warranty (as long as original owner lives in residence)
+    # - Commercial/Non-Homeowners: 2 years from purchase date
+    # - Limited Components (1 Year): Drain assemblies, bathroom hoses, hand-helds, kitchen hand sprays, kitchen hoses
+    
     "warranty_standard": {
         "policy_id": "POL-001",
         "policy_type": PolicyType.WARRANTY.value,
-        "name": "Standard Warranty",
-        "citation": "Our standard warranty covers manufacturing defects for 1 year from the date of purchase.",
-        "coverage_months": 12,
-        "requires_date_check": True,
-        "requires_receipt": True,
-        "date_field": "purchase_date",
-        "in_warranty_message": "Based on your purchase date, your product is within the 1-year warranty period. We'll be happy to assist with a replacement.",
-        "out_warranty_message": "Based on your purchase date, your product is outside the 1-year warranty period. However, we can still help you with replacement parts at our standard pricing.",
-        "unknown_date_message": "To verify your warranty coverage, please provide your proof of purchase showing the purchase date.",
-        "applies_to": ["all"],
-        "exceptions": ["cosmetic_damage", "misuse", "unauthorized_dealer"],
-    },
-    
-    "hose_warranty": {
-        "policy_id": "POL-002",
-        "policy_type": PolicyType.WARRANTY.value,
-        "name": "Extended Hose Warranty",
-        "citation": "Hoses and supply lines are covered under our extended warranty for 2 years from the date of purchase.",
+        "name": "Commercial/Non-Homeowner Warranty",
+        "citation": "For commercial or non-homeowner use, our warranty covers manufacturing defects for 2 years from the date of purchase.",
         "coverage_months": 24,
         "requires_date_check": True,
         "requires_receipt": True,
         "date_field": "purchase_date",
-        "in_warranty_message": "Good news! Hoses have an extended 2-year warranty. Your product is within warranty coverage.",
-        "out_warranty_message": "Hoses have a 2-year warranty period. Based on your purchase date, this is outside warranty coverage, but we can provide replacement hoses at our standard pricing.",
-        "unknown_date_message": "Hoses have an extended 2-year warranty. Please provide your proof of purchase so we can verify coverage.",
-        "applies_to": ["hose", "supply_line", "supply line", "braided", "water supply", "connector"],
-        "product_keywords": ["hose", "supply line", "braided", "water supply", "connector hose"],
+        "applies_to_customer_type": "commercial",  # Only applies to commercial/non-homeowner
+        "in_warranty_message": "Based on your purchase date, your product is within the 2-year commercial warranty period. We'll be happy to assist with a replacement.",
+        "out_warranty_message": "Based on your purchase date, your product is outside the 2-year commercial warranty period. However, we can still help you with replacement parts at our standard pricing.",
+        "unknown_date_message": "To verify your warranty coverage, please provide your proof of purchase (invoice number is sufficient).",
+        "applies_to": ["commercial", "business"],
+        "exceptions": ["cosmetic_damage", "misuse", "unauthorized_dealer"],
+    },
+
+    "hose_warranty": {
+        "policy_id": "POL-002",
+        "policy_type": PolicyType.WARRANTY.value,
+        "name": "Limited Hose Warranty",
+        "citation": "Hoses, hand-helds, and kitchen hand sprays are covered under a limited 1-year warranty from the date of purchase.",
+        "coverage_months": 12,
+        "requires_date_check": True,
+        "requires_receipt": True,
+        "date_field": "purchase_date",
+        "in_warranty_message": "Your hose/supply line is within the 1-year limited warranty period. We'll be happy to assist with a replacement.",
+        "out_warranty_message": "Hoses and supply lines have a 1-year limited warranty. Based on your purchase date, this is outside warranty coverage, but we can provide replacement hoses at our standard pricing.",
+        "unknown_date_message": "Hoses and supply lines have a 1-year limited warranty. Please provide your proof of purchase so we can verify coverage.",
+        "applies_to": ["hose", "supply_line", "supply line", "braided", "water supply", "connector", "hand-held", "handheld", "hand spray", "kitchen spray"],
+        "product_keywords": ["hose", "supply line", "braided", "water supply", "connector hose", "hand-held", "handheld", "hand spray"],
     },
     
     "lifetime_warranty": {
         "policy_id": "POL-003",
         "policy_type": PolicyType.WARRANTY.value,
         "name": "Lifetime Warranty",
-        "citation": "This product includes our lifetime warranty against manufacturing defects for the original purchaser.",
+        "citation": "This product includes our lifetime warranty against manufacturing defects for the original homeowner purchaser, valid for as long as they own the product and live in the residence where it was first installed.",
         "coverage_months": None,  # Lifetime = no expiry
         "requires_date_check": False,
         "requires_receipt": True,
         "requires_original_purchaser": True,
+        "requires_homeowner": True,
         "in_warranty_message": "Your product is covered under our lifetime warranty for manufacturing defects.",
-        "unknown_date_message": "Please provide your proof of purchase to verify original purchaser status for lifetime warranty coverage.",
-        "applies_to": ["faucet_body", "valve_body"],
-        "exceptions": ["finish_wear", "cosmetic_damage", "misuse"],
+        "unknown_date_message": "Please provide your proof of purchase (invoice number is sufficient) to verify original purchaser status for lifetime warranty coverage.",
+        "applies_to": ["faucet_body", "valve_body", "cartridge", "faucet", "valve", "aerator"],
+        "exceptions": ["finish_wear", "cosmetic_damage", "misuse", "hose", "drain", "hand-held", "hand spray"],
     },
     
     # =========================================================================
@@ -146,22 +153,35 @@ POLICY_RULES: Dict[str, Dict[str, Any]] = {
 
 POLICY_TRIGGERS: Dict[str, Dict[str, List[str]]] = {
     # Product-based triggers: if product text contains these keywords, apply these policies
+    # NOTE: Products with lifetime warranty (cartridges, faucets, valves) should NOT be listed here
+    # as they default to lifetime warranty. Only list LIMITED warranty products here.
     "product_keywords": {
+        # LIMITED WARRANTY (1 year) - hoses, drains, hand-helds per rules.txt Section 8.b.iii
         "hose": ["hose_warranty"],
         "supply line": ["hose_warranty"],
         "supply_line": ["hose_warranty"],
         "braided": ["hose_warranty"],
         "connector": ["hose_warranty"],
         "water supply": ["hose_warranty"],
+        "hand-held": ["hose_warranty"],
+        "handheld": ["hose_warranty"],
+        "hand spray": ["hose_warranty"],
+        "drain": ["hose_warranty"],
+        "drain assembly": ["hose_warranty"],
+        # LIFETIME WARRANTY - cartridges, faucets, valves (for homeowners)
+        "cartridge": ["lifetime_warranty"],
+        "faucet": ["lifetime_warranty"],
+        "valve": ["lifetime_warranty"],
+        "aerator": ["lifetime_warranty"],
     },
     
     # Category-based triggers (complements REQUIREMENTS_MATRIX)
     "category_triggers": {
-        "warranty_claim": ["warranty_standard"],
-        "product_issue": ["warranty_standard"],
+        "warranty_claim": ["lifetime_warranty"],  # Default to lifetime, will be overridden by product-specific
+        "product_issue": ["lifetime_warranty"],
         "missing_parts": ["missing_parts_window"],
         "return_refund": ["return_policy"],
-        "replacement_parts": ["warranty_standard"],
+        "replacement_parts": ["lifetime_warranty"],
         "dealer_inquiry": ["dealer_program"],
     },
 }
