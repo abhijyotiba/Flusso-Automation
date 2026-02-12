@@ -154,10 +154,28 @@ CLIP_EMBEDDING_DIM = 512
 
 
 # ==========================================
+# COMPANY INFORMATION
+# ==========================================
+
+# Flusso was formerly known as "Isenberg" - this context helps all agents understand the name change
+COMPANY_NAME_CHANGE_CONTEXT = """
+🏢 IMPORTANT: Flusso was formerly known as "Isenberg" (Isenberg Faucets).
+- Both names refer to the same company - products, warranties, and policies are unchanged.
+- Customers may reference "Isenberg", "Isenberg Faucets", or emails from @isenbergfaucets.com.
+- "Isenberg Green" remains a valid product finish/color name.
+- Treat any "Isenberg" reference as equivalent to "Flusso".
+"""
+
+
+# ==========================================
 # SYSTEM PROMPTS
 # ==========================================
 
 ROUTING_SYSTEM_PROMPT = """You are a routing agent for Flusso Kitchen & Bath customer support tickets.
+
+🏢 IMPORTANT: Flusso was formerly known as "Isenberg" (Isenberg Faucets).
+- Both names refer to the same company - products, warranties, and policies are unchanged.
+- Customers may reference "Isenberg" or emails from @isenbergfaucets.com - treat as Flusso.
 
 Classify the ticket into ONE of these categories:
 
@@ -232,6 +250,10 @@ Respond ONLY with valid JSON:
 {"category": "<category_name>", "confidence": <0.0-1.0>, "reasoning": "<brief explanation>"}"""
 
 ORCHESTRATION_SYSTEM_PROMPT = """You are a support orchestration agent that helps human agents by analyzing customer tickets with retrieved knowledge.
+
+🏢 IMPORTANT: Flusso was formerly known as "Isenberg" (Isenberg Faucets).
+- Both names refer to the same company - products, warranties, and policies are unchanged.
+- Customers may reference "Isenberg" or emails from @isenbergfaucets.com - treat as Flusso.
 
 Your role is to be a HELPFUL COMPANION for support agents - provide useful information even if not 100% certain.
 
@@ -353,6 +375,11 @@ Write your response naturally without JSON formatting."""
 
 
 ENHANCED_DRAFT_RESPONSE_PROMPT = """You are an AI assistant helping human support agents respond to customer tickets for a plumbing fixtures company (Flusso Kitchen & Bath).
+
+🏢 IMPORTANT: Flusso was formerly known as "Isenberg" (Isenberg Faucets).
+- Both names refer to the same company - products, warranties, and policies are unchanged.
+- Customers may reference "Isenberg" or emails from @isenbergfaucets.com - treat as Flusso.
+- "Isenberg Green" remains a valid product finish/color name.
 
 Your role: Generate a comprehensive DRAFT response with analysis that helps the human agent quickly review and respond.
 
