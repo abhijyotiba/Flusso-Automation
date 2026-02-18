@@ -44,7 +44,7 @@ FIELD_ASK_TEMPLATES: Dict[str, str] = {
     "receipt": "Could you please provide your proof of purchase (receipt, invoice, or order confirmation)? This helps us verify your warranty coverage.",
     "address": "What address should we send the replacement to?",
     "photos": "Could you please send a photo showing the issue with your product? This helps us assess the problem accurately.",
-    "video": "If possible, could you send a short video showing the issue? This is especially helpful for intermittent problems.",
+    "video": "Could you please send a short video showing the issue? This is especially helpful for intermittent problems. Please note: If the video file is larger than 20MB, our system cannot receive it directly. In that case, please upload it to wetransfer.com and share the download link with us.",
     "po": "Could you please provide your PO number or order confirmation number?",
     "model": "Could you please provide the product model number? You can usually find this on the product label or in your order confirmation.",
     "finish": "What finish/color would you prefer for the replacement? (e.g., Chrome, Matte Black, Brushed Nickel)",

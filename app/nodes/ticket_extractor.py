@@ -120,6 +120,39 @@ FINISH_NAMES = [
     r'\bbrass\b', r'\bnickel\b', r'\bgold\b',
 ]
 
+# =============================================================================
+# CLAIMED ATTACHMENT PATTERNS
+# =============================================================================
+# These patterns detect when a customer CLAIMS to have attached something.
+# Used to detect discrepancies between claimed vs actual attachments.
+
+CLAIMED_VIDEO_PATTERNS = [
+    r'\battached\s+a\s+video\b', r'\battaching\s+a\s+video\b',
+    r'\bsee\s+the\s+video\b', r'\bincluded\s+a\s+video\b',
+    r'\bvideo\s+attached\b', r'\bvideo\s+showing\b',
+    r'\brecorded\s+a\s+video\b', r'\bsent\s+a\s+video\b',
+    r'\bhere\s+is\s+a\s+video\b', r"\bhere's\s+a\s+video\b",
+    r'\bi\s+have\s+attached\s+a\s+video\b', r'\bplease\s+see\s+video\b',
+    r'\bvideo\s+as\s+well\b', r'\bvideo\s+and\b',
+]
+
+CLAIMED_PHOTO_PATTERNS = [
+    r'\battached\s+photos?\b', r'\battaching\s+photos?\b',
+    r'\bsee\s+the\s+photos?\b', r'\bincluded\s+photos?\b',
+    r'\bphotos?\s+attached\b', r'\battached\s+pictures?\b',
+    r'\bpictures?\s+attached\b', r'\bsee\s+attached\s+photo\b',
+    r'\battached\s+an?\s+images?\b', r'\bsee\s+the\s+images?\b',
+    r'\bsee\s+attached\s+images?\b', r'\bimages?\s+attached\b',
+    r'\bscreenshots?\s+attached\b', r'\battached\s+screenshots?\b',
+]
+
+CLAIMED_DOCUMENT_PATTERNS = [
+    r'\battached\s+documents?\b', r'\battached\s+pdf\b',
+    r'\battached\s+receipt\b', r'\battached\s+invoice\b',
+    r'\bsee\s+the\s+attached\s+document\b', r'\battached\s+files?\b',
+    r'\battached\s+proof\b', r'\bproof\s+attached\b',
+]
+
 
 # =============================================================================
 # PARSING FUNCTIONS
@@ -386,6 +419,28 @@ def extract_ticket_facts(state: TicketState) -> Dict[str, Any]:
     raw_finish_mentions = extract_finish_mentions(combined_text)
     
     # =================================================================
+    # CLAIMED VS ACTUAL ATTACHMENT DISCREPANCY DETECTION
+    # =================================================================
+    # Detect what the customer CLAIMS to have attached vs what was received
+    
+    claimed_video = detect_keyword_presence(combined_text, CLAIMED_VIDEO_PATTERNS)
+    claimed_photos = detect_keyword_presence(combined_text, CLAIMED_PHOTO_PATTERNS)
+    claimed_documents = detect_keyword_presence(combined_text, CLAIMED_DOCUMENT_PATTERNS)
+    
+    # Compute discrepancies (claimed but not received)
+    claimed_but_missing = []
+    if claimed_video and not has_video:
+        claimed_but_missing.append("video")
+    if claimed_photos and not has_photos:
+        claimed_but_missing.append("photos")
+    if claimed_documents and not has_document_attachments:
+        claimed_but_missing.append("documents")
+    
+    # Log discrepancies
+    if claimed_but_missing:
+        logger.warning(f"{STEP_NAME} | 🚨 ATTACHMENT DISCREPANCY: Customer claimed {claimed_but_missing} but not received!")
+    
+    # =================================================================
     # BUILD TICKET_FACTS RECORD
     # =================================================================
     
@@ -402,6 +457,12 @@ def extract_ticket_facts(state: TicketState) -> Dict[str, Any]:
         "has_video": has_video,
         "has_photos": has_photos,
         "has_document_attachments": has_document_attachments,
+        
+        # Claimed vs Actual attachment discrepancies
+        "claimed_video": claimed_video,
+        "claimed_photos": claimed_photos,
+        "claimed_documents": claimed_documents,
+        "claimed_but_missing": claimed_but_missing,  # List of attachment types customer claimed but not received
         
         # Metadata from Freshdesk (reliable)
         "customer_name": customer_name,

@@ -175,6 +175,36 @@ def validate_constraints(
         conditional_fields, ticket_facts, resolved_category
     )
     
+    # 6b. Handle claimed-but-missing attachments (discrepancy detection)
+    # If customer CLAIMED to attach something but it wasn't received, add to missing_fields
+    claimed_but_missing = ticket_facts.get("claimed_but_missing", []) or []
+    if claimed_but_missing and resolved_category in ["product_issue", "warranty_claim", "replacement_parts", "return_refund"]:
+        for attachment_type in claimed_but_missing:
+            if attachment_type == "video" and "video" not in result.missing_fields:
+                result.missing_fields.append("video")
+                result.required_asks.append(
+                    "Thank you for sending over the video. If the file is larger than 20MB or if the file was sent through a Google Drive link, "
+                    "we may not be able to access it. One option you have is sending it through wetransfer.com and sharing the download link with us."
+                )
+                result.validation_notes.append(f"Customer claimed to attach {attachment_type} but it was not received (possibly >20MB limit)")
+            elif attachment_type == "photos" and "photos" not in result.missing_fields:
+                result.missing_fields.append("photos")
+                result.required_asks.append(
+                    "We noticed you mentioned attaching photos/images, but they don't appear to have come through. "
+                    "Could you please re-attach the photos showing the issue?"
+                )
+                result.validation_notes.append(f"Customer claimed to attach {attachment_type} but they were not received")
+            elif attachment_type == "documents" and "documents" not in result.missing_fields:
+                result.missing_fields.append("documents")
+                result.required_asks.append(
+                    "We noticed you mentioned attaching a document, but it doesn't appear to have come through. "
+                    "Could you please re-attach the document?"
+                )
+                result.validation_notes.append(f"Customer claimed to attach {attachment_type} but they were not received")
+        
+        if claimed_but_missing:
+            logger.warning(f"{STEP_NAME} | 🚨 Attachment discrepancy: customer claimed {claimed_but_missing} but not received")
+    
     # 7. Determine applicable policies
     all_policies = list(policy_keys)  # Start with category policies
     

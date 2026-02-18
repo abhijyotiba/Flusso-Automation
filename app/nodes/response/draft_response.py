@@ -444,6 +444,93 @@ could share confidential dealer information with end customers.
 """
 
 
+def _build_attachment_facts_section(
+    ticket_facts: Dict[str, Any], 
+    ticket_images: list, 
+    ticket_attachments: list
+) -> str:
+    """
+    Build a ground-truth section showing what attachments were ACTUALLY received.
+    
+    This provides the LLM with factual attachment information and highlights
+    any discrepancies between what the customer claimed to attach vs what was received.
+    The constraint_validator handles adding these to missing_fields.
+    
+    Args:
+        ticket_facts: Dict containing has_video, has_photos, has_document_attachments, 
+                      and claimed_but_missing from ticket_extractor
+        ticket_images: List of image attachments
+        ticket_attachments: List of all attachments
+        
+    Returns:
+        Formatted string section for the prompt
+    """
+    if not ticket_facts and not ticket_images and not ticket_attachments:
+        return ""
+    
+    # Count actual attachments by type
+    image_count = len(ticket_images) if ticket_images else 0
+    
+    video_count = 0
+    document_count = 0
+    other_count = 0
+    
+    if ticket_attachments:
+        for att in ticket_attachments:
+            content_type = att.get("content_type", "") or ""
+            if content_type.startswith("video"):
+                video_count += 1
+            elif content_type.startswith("image"):
+                pass  # Already counted in ticket_images
+            elif content_type.startswith("application/pdf") or content_type.startswith("application/"):
+                document_count += 1
+            elif content_type:
+                other_count += 1
+    
+    # Use ticket_facts as source of truth
+    has_video = ticket_facts.get("has_video", False) if ticket_facts else (video_count > 0)
+    has_photos = ticket_facts.get("has_photos", False) if ticket_facts else (image_count > 0)
+    has_documents = ticket_facts.get("has_document_attachments", False) if ticket_facts else (document_count > 0)
+    
+    # Get claimed_but_missing from ticket_extractor (already computed)
+    claimed_but_missing = ticket_facts.get("claimed_but_missing", []) if ticket_facts else []
+    
+    # Build the section
+    lines = []
+    lines.append("═══════════════════════════════════════════════════════════════════════")
+    lines.append("📎 ACTUAL ATTACHMENTS RECEIVED (GROUND TRUTH)")
+    lines.append("═══════════════════════════════════════════════════════════════════════")
+    lines.append("")
+    lines.append(f"  • Images/Photos: {image_count} {'✓' if has_photos else '✗ NONE'}")
+    lines.append(f"  • Videos: {video_count} {'✓' if has_video else '✗ NONE'}")
+    lines.append(f"  • Documents (PDF, etc.): {document_count} {'✓' if has_documents else '✗ NONE'}")
+    if other_count > 0:
+        lines.append(f"  • Other files: {other_count}")
+    lines.append("")
+    
+    # Add discrepancy warnings if customer claimed attachments that weren't received
+    if claimed_but_missing:
+        lines.append("🚨 ATTACHMENT DISCREPANCY:")
+        lines.append("Customer CLAIMED to attach the following but we did NOT receive them:")
+        for attachment_type in claimed_but_missing:
+            if attachment_type == "video":
+                lines.append(f"  ❌ {attachment_type} - NOT RECEIVED (likely >20MB or Google Drive link)")
+                lines.append("     NOTE: Freshdesk cannot receive videos larger than 20MB.")
+                lines.append("     Suggest wetransfer.com as an alternative.")
+            else:
+                lines.append(f"  ❌ {attachment_type} - NOT RECEIVED")
+        lines.append("")
+        lines.append("⚠️ DO NOT say 'we received your [video/photos/documents]' for missing items.")
+        lines.append("   The constraint_validator has added these to missing_fields - ask for them.")
+        lines.append("")
+    
+    lines.append("Base your response on ACTUAL attachments received, not customer claims.")
+    lines.append("═══════════════════════════════════════════════════════════════════════")
+    lines.append("")
+    
+    return "\n".join(lines)
+
+
 def draft_final_response(state: TicketState) -> Dict[str, Any]:
     """
     Generate final response to customer.
@@ -882,6 +969,73 @@ Once we receive this information, we can proceed with your request."
 - This is about order logistics, not product identification
 - Focus on the customer's order/tracking request
 """
+    elif ticket_category == "product_inquiry":
+        # Build product URL info if we have an identified product
+        product_url_info = ""
+        prod_url = ""
+        prod_model = ""
+        prod_name = ""
+        
+        if identified_product:
+            # Try to get product URL from identified_product
+            prod_url = identified_product.get("product_url", "") or ""
+            prod_model = identified_product.get("model", "") or ""
+            prod_name = identified_product.get("name", "") or ""
+        
+        # If no product_url in identified_product, try to find it from react_iterations
+        if not prod_url and prod_model:
+            react_iterations = state.get("react_iterations", []) or []
+            for iteration in react_iterations:
+                tool_output = iteration.get("tool_output", {}) or {}
+                products = tool_output.get("products", []) or []
+                for product in products:
+                    if product.get("model_no", "").upper() == prod_model.upper():
+                        prod_url = product.get("product_url", "") or ""
+                        if not prod_name:
+                            prod_name = product.get("title", "") or ""
+                        break
+                if prod_url:
+                    break
+        
+        # Construct URL if still missing but we have model
+        if prod_url:
+            product_url_info = f"""
+📎 PRODUCT URL FOR RESPONSE (MUST INCLUDE):
+Include this link in your response - it shows real-time inventory:
+{prod_url}
+
+Model: {prod_model}
+Name: {prod_name}
+"""
+        elif prod_model:
+            # Construct URL if not provided
+            slug_model = prod_model.replace(".", "").upper()
+            slug_name = prod_name.lower().replace(" ", "-") if prod_name else "product-name"
+            constructed_url = f"https://www.flussofaucets.com/products/{slug_model}-{slug_name}/"
+            product_url_info = f"""
+📎 PRODUCT URL FOR RESPONSE (MUST INCLUDE):
+Model identified: {prod_model}
+Product URL: {constructed_url}
+(If URL doesn't work, the direct format is: https://www.flussofaucets.com/products/[MODEL]-[name-slug]/)
+"""
+        
+        category_guidance = f"""
+⚠️ CATEGORY: PRODUCT INQUIRY / STOCK AVAILABILITY
+- Customer is asking about product availability, lead time, or stock status
+- DO NOT ask for photos, videos, or receipts
+- DO NOT say "lead time of 0" - translate to "in stock"
+{product_url_info}
+📋 REQUIRED RESPONSE ELEMENTS:
+1. Confirm stock status: "The [model] is in stock" (if available)
+2. ALWAYS include product page link showing inventory (see URL above)
+3. Lead time: "Lead time is about 5-7 business days from the day we receive the purchase order"
+   - 3 business days for processing + 2-3 days UPS Ground freight
+   - May vary for California or New York
+
+📝 SAMPLE RESPONSE FORMAT:
+"The [model] is in stock - our site will show current updated inventory: [product_url]
+Lead time is about 5-7 business days from the day we receive the purchase order."
+"""
     elif ticket_category == "general":
         category_guidance = """
 ⚠️ CATEGORY: GENERAL INQUIRY / ACCOUNT UPDATE
@@ -920,6 +1074,14 @@ INCORRECT response: "Please re-send the photo as it did not come through on our 
     # Get ticket_facts to provide context-aware guidance (e.g., PO presence)
     ticket_facts = state.get("ticket_facts", {}) or {}
     customer_type_guidance = _build_customer_type_guidance(customer_type, customer_rules, ticket_facts)
+    
+    # === BUILD ATTACHMENT GROUND TRUTH SECTION ===
+    # This provides the LLM with ACTUAL attachment data and discrepancy info from ticket_extractor
+    attachment_facts_section = _build_attachment_facts_section(
+        ticket_facts=ticket_facts,
+        ticket_images=ticket_images,
+        ticket_attachments=ticket_attachments
+    )
     
     meta = f"""
 TODAY'S DATE: {current_date} ({current_date_readable})
@@ -997,6 +1159,7 @@ Subject: {subject}
 Description: {ticket_text}
 
 TICKET CATEGORY: {ticket_category}
+{attachment_facts_section}
 {policy_prompt_section}
 {constraints_prompt_section}
 RETRIEVED CONTEXT:
