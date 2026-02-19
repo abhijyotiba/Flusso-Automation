@@ -14,12 +14,18 @@ from typing import Dict, Any, List
 from app.graph.state import TicketState
 from app.utils.audit import add_audit_event
 from app.clients.llm_client import call_llm
-from app.config.constants import DRAFT_RESPONSE_PROMPT, ENHANCED_DRAFT_RESPONSE_PROMPT
+from app.config.constants import ENHANCED_DRAFT_RESPONSE_PROMPT
 from app.utils.detailed_logger import (
     log_node_start, log_node_complete, log_llm_interaction
 )
+from app.utils.html_formatters import (
+    convert_to_html,
+    build_collapsible_section,
+    build_sources_html,
+    build_agent_console_section,
+)
 from app.services.resource_links_service import get_resource_links_for_response
-from app.services.policy_service import get_relevant_policy
+from app.services.policy_service import get_relevant_policy, format_category_tips_for_prompt
 
 # Constraint validator import (NEW)
 try:
@@ -37,299 +43,6 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 STEP_NAME = "1️⃣4️⃣ DRAFT_RESPONSE"
-
-
-def convert_to_html(text: str) -> str:
-    """
-    Convert markdown-style text to HTML for Freshdesk notes.
-    Handles: bold, lists, paragraphs, headers, [VERIFY] tags
-    
-    Order of operations:
-    1. Convert markdown to HTML tags FIRST
-    2. Then escape remaining plain text content
-    """
-    # 1. Convert [VERIFY: ...] tags to highlighted spans FIRST (before escaping)
-    text = re.sub(
-        r'\[VERIFY:\s*([^\]]+)\]',
-        r'|||VERIFY_START|||\1|||VERIFY_END|||',  # Temporary placeholder
-        text
-    )
-    
-    # 2. Convert **bold** to placeholder (before escaping)
-    text = re.sub(r'\*\*([^*]+)\*\*', r'|||BOLD_START|||\1|||BOLD_END|||', text)
-    
-    # 3. Now escape HTML entities in plain text
-    text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    
-    # 4. Replace placeholders with actual HTML tags
-    text = text.replace('|||VERIFY_START|||', '<span style="background: #fef3c7; color: #92400e; padding: 2px 6px; border-radius: 4px; font-size: 12px;">⚠️ VERIFY: ')
-    text = text.replace('|||VERIFY_END|||', '</span>')
-    text = text.replace('|||BOLD_START|||', '<strong>')
-    text = text.replace('|||BOLD_END|||', '</strong>')
-    
-    # Convert numbered lists (1. 2. 3.) and bullet lists
-    lines = text.split('\n')
-    in_numbered_list = False
-    in_bullet_list = False
-    result_lines = []
-    
-    for line in lines:
-        stripped = line.strip()
-        
-        # Check for numbered list item
-        numbered_match = re.match(r'^(\d+)\.\s+(.+)$', stripped)
-        if numbered_match:
-            # Close bullet list if open
-            if in_bullet_list:
-                result_lines.append('</ul>')
-                in_bullet_list = False
-            # Open numbered list if not open
-            if not in_numbered_list:
-                result_lines.append('<ol style="margin: 12px 0; padding-left: 24px;">')
-                in_numbered_list = True
-            result_lines.append(f'<li style="margin: 8px 0;">{numbered_match.group(2)}</li>')
-        # Check for bullet list item
-        elif stripped.startswith('- ') or stripped.startswith('• '):
-            # Close numbered list if open
-            if in_numbered_list:
-                result_lines.append('</ol>')
-                in_numbered_list = False
-            # Open bullet list if not open
-            if not in_bullet_list:
-                result_lines.append('<ul style="margin: 12px 0; padding-left: 24px;">')
-                in_bullet_list = True
-            result_lines.append(f'<li style="margin: 8px 0;">{stripped[2:]}</li>')
-        else:
-            # Close any open lists
-            if in_numbered_list:
-                result_lines.append('</ol>')
-                in_numbered_list = False
-            if in_bullet_list:
-                result_lines.append('</ul>')
-                in_bullet_list = False
-            
-            # Empty line = paragraph break
-            if not stripped:
-                result_lines.append('<br>')
-            else:
-                result_lines.append(f'<p style="margin: 8px 0; line-height: 1.6;">{stripped}</p>')
-    
-    # Close any open lists at end
-    if in_numbered_list:
-        result_lines.append('</ol>')
-    if in_bullet_list:
-        result_lines.append('</ul>')
-    
-    html = '\n'.join(result_lines)
-    
-    # Clean up multiple <br> tags
-    html = re.sub(r'(<br>\s*){3,}', '<br><br>', html)
-    
-    # Wrap in a container div
-    html = f'<div style="font-family: Arial, sans-serif; font-size: 14px; color: #1f2937; line-height: 1.6;">{html}</div>'
-    
-    return html
-
-
-def build_collapsible_section(title: str, content: str, icon: str = "📋", default_open: bool = False) -> str:
-    """
-    Build a collapsible HTML section using <details> and <summary> tags.
-    
-    Args:
-        title: The section title shown in the summary
-        content: The HTML content to show when expanded
-        icon: Emoji icon for the section
-        default_open: Whether the section should be open by default
-    
-    Returns:
-        HTML string with collapsible section
-    """
-    open_attr = "open" if default_open else ""
-    return f"""
-<details {open_attr} style="margin-bottom: 16px; border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden;">
-    <summary style="background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%); padding: 12px 16px; cursor: pointer; font-weight: 600; color: #1e293b; display: flex; align-items: center; gap: 8px; user-select: none;">
-        <span style="font-size: 16px;">{icon}</span>
-        <span>{title}</span>
-        <span style="margin-left: auto; font-size: 12px; color: #64748b;">Click to expand</span>
-    </summary>
-    <div style="padding: 16px; background: #ffffff;">
-        {content}
-    </div>
-</details>
-"""
-
-
-def build_sources_html(
-    source_documents: List[Dict[str, Any]],
-    source_products: List[Dict[str, Any]],
-    source_tickets: List[Dict[str, Any]],
-    vision_quality: str = "LOW"
-) -> str:
-    """
-    Build HTML section displaying all sources for the human agent.
-    Each source type is in its own collapsible section for better readability.
-    """
-    sections = []
-    
-    # === RELEVANT DOCUMENTS (Collapsible) ===
-    if source_documents:
-        doc_rows = ""
-        for doc in source_documents[:5]:  # Limit to 5
-            title = doc.get('title', 'Unknown Document')[:50]
-            score = doc.get('relevance_score', 0)
-            stars = "⭐⭐⭐" if score >= 0.85 else "⭐⭐" if score >= 0.7 else "⭐"
-            doc_rows += f"""
-            <tr>
-                <td style="padding: 8px; border-bottom: 1px solid #e5e7eb;">{doc.get('rank', '-')}</td>
-                <td style="padding: 8px; border-bottom: 1px solid #e5e7eb;">{title}</td>
-                <td style="padding: 8px; border-bottom: 1px solid #e5e7eb; text-align: center;">{stars}</td>
-            </tr>"""
-        
-        doc_table = f"""
-            <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
-                <thead>
-                    <tr style="background: #f3f4f6;">
-                        <th style="padding: 8px; text-align: left; width: 40px;">#</th>
-                        <th style="padding: 8px; text-align: left;">Document</th>
-                        <th style="padding: 8px; text-align: center; width: 80px;">Relevance</th>
-                    </tr>
-                </thead>
-                <tbody>{doc_rows}</tbody>
-            </table>"""
-        
-        sections.append(build_collapsible_section(
-            title=f"Relevant Documents ({len(source_documents[:5])} found)",
-            content=doc_table,
-            icon="📄",
-            default_open=False
-        ))
-    
-    # === VISUAL MATCHES (Collapsible) ===
-    if source_products and vision_quality != "CATEGORY_MISMATCH":
-        product_rows = ""
-        for prod in source_products[:5]:  # Limit to 5
-            title = prod.get('product_title', 'Unknown')[:40]
-            model = prod.get('model_no', 'N/A')
-            score = prod.get('similarity_score', 0)
-            match_icon = prod.get('match_level', '🟡')
-            product_rows += f"""
-            <tr>
-                <td style="padding: 8px; border-bottom: 1px solid #e5e7eb;">{match_icon}</td>
-                <td style="padding: 8px; border-bottom: 1px solid #e5e7eb;">{title}</td>
-                <td style="padding: 8px; border-bottom: 1px solid #e5e7eb; font-family: monospace;">{model}</td>
-                <td style="padding: 8px; border-bottom: 1px solid #e5e7eb; text-align: center;">{score}%</td>
-            </tr>"""
-        
-        quality_badge = {
-            "HIGH": '<span style="background: #22c55e; color: white; padding: 2px 8px; border-radius: 4px; font-size: 11px;">HIGH CONFIDENCE</span>',
-            "LOW": '<span style="background: #eab308; color: white; padding: 2px 8px; border-radius: 4px; font-size: 11px;">LOW CONFIDENCE</span>',
-            "NO_MATCH": '<span style="background: #6b7280; color: white; padding: 2px 8px; border-radius: 4px; font-size: 11px;">NO MATCH</span>',
-        }.get(vision_quality, '')
-        
-        product_table = f"""
-            <div style="margin-bottom: 8px;">{quality_badge}</div>
-            <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
-                <thead>
-                    <tr style="background: #f3f4f6;">
-                        <th style="padding: 8px; text-align: left; width: 30px;"></th>
-                        <th style="padding: 8px; text-align: left;">Product</th>
-                        <th style="padding: 8px; text-align: left; width: 120px;">Model</th>
-                        <th style="padding: 8px; text-align: center; width: 60px;">Match</th>
-                    </tr>
-                </thead>
-                <tbody>{product_rows}</tbody>
-            </table>"""
-        
-        sections.append(build_collapsible_section(
-            title=f"Visual Matches ({len(source_products[:5])} found)",
-            content=product_table,
-            icon="🖼️",
-            default_open=False
-        ))
-    elif vision_quality == "CATEGORY_MISMATCH":
-        mismatch_content = '<p style="margin: 0; font-size: 13px; color: #991b1b;">Visual search found products from a different category than what the customer is asking about. These results have been excluded.</p>'
-        sections.append(build_collapsible_section(
-            title="Visual Matches ❌ CATEGORY MISMATCH",
-            content=mismatch_content,
-            icon="🖼️",
-            default_open=False
-        ))
-    
-    # === PAST TICKETS (Collapsible) ===
-    if source_tickets:
-        ticket_rows = ""
-        for ticket in source_tickets[:5]:  # Limit to 5
-            if not ticket or not isinstance(ticket, dict):
-                continue
-            ticket_id = ticket.get('ticket_id', 'N/A')
-            subject_raw = ticket.get('subject', 'Unknown') or 'Unknown'
-            subject = str(subject_raw)[:45]
-            score = ticket.get('similarity_score', 0)
-            ticket_rows += f"""
-            <tr>
-                <td style="padding: 8px; border-bottom: 1px solid #e5e7eb; font-family: monospace; color: #6366f1;">#{ticket_id}</td>
-                <td style="padding: 8px; border-bottom: 1px solid #e5e7eb;">{subject}</td>
-                <td style="padding: 8px; border-bottom: 1px solid #e5e7eb; text-align: center;">{score}%</td>
-            </tr>"""
-        
-        ticket_table = f"""
-            <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
-                <thead>
-                    <tr style="background: #f3f4f6;">
-                        <th style="padding: 8px; text-align: left; width: 80px;">Ticket</th>
-                        <th style="padding: 8px; text-align: left;">Subject</th>
-                        <th style="padding: 8px; text-align: center; width: 70px;">Similarity</th>
-                    </tr>
-                </thead>
-                <tbody>{ticket_rows}</tbody>
-            </table>"""
-        
-        sections.append(build_collapsible_section(
-            title=f"Similar Past Tickets ({len(source_tickets[:5])} found)",
-            content=ticket_table,
-            icon="🎫",
-            default_open=False
-        ))
-    
-    if not sections:
-        return """
-        <div style="background: #fef3c7; border: 1px solid #fcd34d; border-radius: 8px; padding: 12px; margin-top: 20px;">
-            <p style="margin: 0; color: #92400e; font-size: 13px;">⚠️ No source documents, product matches, or similar tickets were found for this request.</p>
-        </div>"""
-    
-    # Wrap all sections in a collapsible sources container
-    sources_content = ''.join(sections)
-    sources_html = f"""
-    <div style="margin-top: 16px;">
-        <details style="margin-bottom: 16px; border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden;">
-            <summary style="background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%); padding: 12px 16px; cursor: pointer; font-weight: 600; color: #1e293b; display: flex; align-items: center; gap: 8px; user-select: none;">
-                <span style="font-size: 16px;">📎</span>
-                <span>Sources & References</span>
-                <span style="margin-left: auto; font-size: 12px; color: #64748b;">Click to expand</span>
-            </summary>
-            <div style="padding: 16px; background: #ffffff;">
-                {sources_content}
-            </div>
-        </details>
-    </div>"""
-    
-    return sources_html
-
-
-def build_agent_console_section() -> str:
-    """
-    Small HTML section with a button linking to the Agent Console.
-    Appears at the bottom of all draft responses to help human agents
-    quickly lookup product details by model number or product ID.
-    """
-    from app.config.settings import settings
-    url = settings.agent_console_url
-    return f"""
-    <div style="margin-top:16px; padding-top:12px; border-top:1px dashed #e5e7eb; display:flex; align-items:center; gap:12px;">
-        <a href="{url}" target="_blank" rel="noopener noreferrer" style="display:inline-block; background:#0ea5e9; color:#ffffff; padding:10px 14px; border-radius:8px; text-decoration:none; font-weight:600;">Open Agent Console</a>
-        <div style="color:#475569; font-size:13px;">Agent Console: lookup product details by <strong>model no.</strong> or <strong>product ID</strong>.</div>
-    </div>
-    """
 
 
 def _build_customer_type_guidance(customer_type: str, customer_rules: Dict[str, Any], ticket_facts: Dict[str, Any] = None) -> str:
@@ -475,10 +188,15 @@ def _build_attachment_facts_section(
     document_count = 0
     other_count = 0
     
+    # Video file extensions (for fallback when content_type is generic)
+    VIDEO_EXTENSIONS = ('.mp4', '.mov', '.avi', '.wmv', '.3gp', '.3gpp', '.mkv', '.webm', '.flv', '.m4v', '.mpeg', '.mpg', '.mts', '.ts', '.vob')
+    
     if ticket_attachments:
         for att in ticket_attachments:
             content_type = att.get("content_type", "") or ""
-            if content_type.startswith("video"):
+            filename = att.get("name", "") or ""
+            # Check video by content_type OR file extension
+            if content_type.startswith("video") or filename.lower().endswith(VIDEO_EXTENSIONS):
                 video_count += 1
             elif content_type.startswith("image"):
                 pass  # Already counted in ticket_images
@@ -789,10 +507,14 @@ def draft_final_response(state: TicketState) -> Dict[str, Any]:
             "address", "ship to", "send to", "deliver to", "street", "city", "zip", "state"
         ])
         
-        # Check for photo/video evidence
+        # Video file extensions (for fallback when content_type is generic like application/octet-stream)
+        VIDEO_EXTENSIONS = ('.mp4', '.mov', '.avi', '.wmv', '.3gp', '.3gpp', '.mkv', '.webm', '.flv', '.m4v', '.mpeg', '.mpg', '.mts', '.ts', '.vob')
+        
+        # Check for photo/video evidence (by content_type OR file extension)
         has_media = len(ticket_images) > 0 or any(
             att.get("content_type", "").startswith("image") or 
-            att.get("content_type", "").startswith("video")
+            att.get("content_type", "").startswith("video") or
+            att.get("name", "").lower().endswith(VIDEO_EXTENSIONS)
             for att in ticket_attachments
         )
         
@@ -833,6 +555,7 @@ def draft_final_response(state: TicketState) -> Dict[str, Any]:
     # === Fetch Policy Context for Response Generation ===
     policy_context = ""
     policy_requirements_list = []
+    policy_result = None  # Initialize before try block for use in category_tips
     try:
         policy_result = get_relevant_policy(
             ticket_category=ticket_category,
@@ -899,11 +622,13 @@ Visual matches have low confidence. Reason: {vision_reason}
     current_date = datetime.now().strftime("%m-%d-%Y")  # e.g., "12-05-2025" (MM-DD-YYYY)
     current_date_readable = datetime.now().strftime("%B %d, %Y")  # e.g., "December 05, 2025"
 
-    # Build category-specific guidance
-    category_guidance = ""
-    missing_requirements_guidance = ""
+    # === BUILD CATEGORY GUIDANCE FROM POLICY SERVICE (Single Source of Truth) ===
+    # Get category tips from policy_result (already fetched above)
+    category_tips = policy_result.get("category_tips", {}) if policy_result else {}
+    category_guidance = format_category_tips_for_prompt(category_tips, ticket_category)
     
     # Build missing requirements guidance if applicable
+    missing_requirements_guidance = ""
     if missing_requirements:
         missing_list = "\n".join(f"   - {req}" for req in missing_requirements)
         missing_requirements_guidance = f"""
@@ -924,63 +649,12 @@ Once we receive this information, we can proceed with your request."
 ═══════════════════════════════════════════════════════════════════════
 """
     
-    if ticket_category == "pricing_request":
-        category_guidance = """
-⚠️ CATEGORY: PRICING REQUEST
-- Customer is asking for pricing/MSRP
-- DO NOT ask for product photos or receipts
-- Provide pricing if found in search results
-- If pricing not found, say we will follow up with pricing information
-"""
-    elif ticket_category == "dealer_inquiry":
-        category_guidance = """
-⚠️ CATEGORY: DEALER/PARTNERSHIP INQUIRY  
-- Customer wants to become a dealer or partner
-- Acknowledge their interest in Flusso partnership
-- If they submitted documents (application, resale certificate), acknowledge receipt
-- Provide next steps for application review
-- DO NOT ask for product photos or model numbers
-"""
-    elif ticket_category == "return_refund":
-        category_guidance = f"""
-⚠️ CATEGORY: RETURN/REFUND REQUEST
-- Customer wants to return a product or get a refund
-- MANDATORY: Collect PO/order number, reason for return, and photo if defective
-- Reference return policy (45/90/180 day windows with restocking fees)
-- State RGA number will be issued after verification
-- DO NOT approve the return without required information
-{missing_requirements_guidance}
-"""
-    elif ticket_category in ["replacement_parts", "warranty_claim", "product_issue"]:
-        category_guidance = f"""
-⚠️ CATEGORY: {ticket_category.upper().replace('_', ' ')}
-- Customer is reporting a product issue or requesting replacement
-- MANDATORY: Before processing, verify we have:
-  1. PO/Purchase Order or proof of purchase
-  2. Photo/video showing the issue/defect  
-  3. Shipping address for replacement
-- DO NOT approve replacement without required information
-- If information is missing, politely request it
-{missing_requirements_guidance}
-"""
-    elif ticket_category in ["shipping_tracking"]:
-        category_guidance = f"""
-⚠️ CATEGORY: {ticket_category.upper().replace('_', ' ')}
-- This is about order logistics, not product identification
-- Focus on the customer's order/tracking request
-"""
-    elif ticket_category == "product_inquiry":
-        # Build product URL info if we have an identified product
-        product_url_info = ""
-        prod_url = ""
-        prod_model = ""
-        prod_name = ""
-        
-        if identified_product:
-            # Try to get product URL from identified_product
-            prod_url = identified_product.get("product_url", "") or ""
-            prod_model = identified_product.get("model", "") or ""
-            prod_name = identified_product.get("name", "") or ""
+    # === Special handling for product_inquiry: Build product URL info ===
+    product_url_supplement = ""
+    if ticket_category == "product_inquiry" and identified_product:
+        prod_url = identified_product.get("product_url", "") or ""
+        prod_model = identified_product.get("model", "") or ""
+        prod_name = identified_product.get("name", "") or ""
         
         # If no product_url in identified_product, try to find it from react_iterations
         if not prod_url and prod_model:
@@ -999,7 +673,7 @@ Once we receive this information, we can proceed with your request."
         
         # Construct URL if still missing but we have model
         if prod_url:
-            product_url_info = f"""
+            product_url_supplement = f"""
 📎 PRODUCT URL FOR RESPONSE (MUST INCLUDE):
 Include this link in your response - it shows real-time inventory:
 {prod_url}
@@ -1012,42 +686,18 @@ Name: {prod_name}
             slug_model = prod_model.replace(".", "").upper()
             slug_name = prod_name.lower().replace(" ", "-") if prod_name else "product-name"
             constructed_url = f"https://www.flussofaucets.com/products/{slug_model}-{slug_name}/"
-            product_url_info = f"""
+            product_url_supplement = f"""
 📎 PRODUCT URL FOR RESPONSE (MUST INCLUDE):
 Model identified: {prod_model}
 Product URL: {constructed_url}
 (If URL doesn't work, the direct format is: https://www.flussofaucets.com/products/[MODEL]-[name-slug]/)
 """
-        
-        category_guidance = f"""
-⚠️ CATEGORY: PRODUCT INQUIRY / STOCK AVAILABILITY
-- Customer is asking about product availability, lead time, or stock status
-- DO NOT ask for photos, videos, or receipts
-- DO NOT say "lead time of 0" - translate to "in stock"
-{product_url_info}
-📋 REQUIRED RESPONSE ELEMENTS:
-1. Confirm stock status: "The [model] is in stock" (if available)
-2. ALWAYS include product page link showing inventory (see URL above)
-3. Lead time: "Lead time is about 5-7 business days from the day we receive the purchase order"
-   - 3 business days for processing + 2-3 days UPS Ground freight
-   - May vary for California or New York
-
-📝 SAMPLE RESPONSE FORMAT:
-"The [model] is in stock - our site will show current updated inventory: [product_url]
-Lead time is about 5-7 business days from the day we receive the purchase order."
-"""
-    elif ticket_category == "general":
-        category_guidance = """
-⚠️ CATEGORY: GENERAL INQUIRY / ACCOUNT UPDATE
-- This is a general request that does NOT involve product support
-- Could be: account update, address change, business name change, contact info update, or general question
-- DO NOT ask for product model numbers or photos
-- DO NOT assume this is a product-related request
-- Acknowledge the customer's request/information professionally
-- If it's an account/address update: Confirm you've received the information and will update records
-- If it's a general question: Answer directly or acknowledge you'll look into it
-- Keep response brief and professional
-"""
+    
+    # Combine category guidance with supplements
+    if product_url_supplement:
+        category_guidance = category_guidance + "\n" + product_url_supplement
+    if missing_requirements_guidance:
+        category_guidance = category_guidance + "\n" + missing_requirements_guidance
 
     # Build image analysis guidance if we have insights about image condition
     image_analysis_guidance = ""

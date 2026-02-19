@@ -384,9 +384,13 @@ def extract_ticket_facts(state: TicketState) -> Dict[str, Any]:
     ticket_images = state.get("ticket_images", []) or []
     ticket_attachments = state.get("ticket_attachments", []) or []
     
-    # Check for video attachments
+    # Video file extensions (for fallback when content_type is generic)
+    VIDEO_EXTENSIONS = ('.mp4', '.mov', '.avi', '.wmv', '.3gp', '.3gpp', '.mkv', '.webm', '.flv', '.m4v', '.mpeg', '.mpg', '.mts', '.ts', '.vob')
+    
+    # Check for video attachments (by content_type OR file extension)
     has_video = any(
-        att.get("content_type", "").startswith("video")
+        att.get("content_type", "").startswith("video") or
+        att.get("name", "").lower().endswith(VIDEO_EXTENSIONS)
         for att in ticket_attachments
     )
     

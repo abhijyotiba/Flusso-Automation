@@ -40,11 +40,276 @@ LOCK = threading.Lock()
 POLICY_CATEGORIES = {
     "warranty": ["warranty", "warranty_claim", "defect", "broken", "malfunction", "not working"],
     "return": ["return", "refund", "return_refund", "rga", "send back", "money back"],
-    "replacement_parts": ["replacement", "replacement_parts", "spare part", "part needed", "missing_parts"],
+    "replacement_parts": ["replacement", "replacement_parts", "spare part", "part needed"],
     "missing_parts": ["missing", "missing_parts", "not included", "incomplete", "parts missing"],
     "shipping": ["shipping", "shipping_tracking", "delivery", "tracking", "where is my order"],
     "installation": ["installation", "installation_help", "install", "setup", "mounting", "how to"],
+    "pricing": ["pricing", "pricing_request", "msrp", "price", "cost", "quote"],
+    "dealer": ["dealer", "dealer_inquiry", "partnership", "account", "resale", "distributor"],
+    "finish_color": ["finish", "finish_color", "color", "chrome", "brass", "nickel", "matte"],
+    "feedback": ["feedback", "feedback_suggestion", "suggestion", "idea", "improvement"],
     "general": ["general", "product_inquiry", "question", "information"]
+}
+
+# ===============================
+# CATEGORY TIPS - LLM Behavioral Guidance
+# ===============================
+# These are quick do/don't rules for the LLM when generating responses.
+# Aligned with official policy rules - policy_service is the SINGLE SOURCE OF TRUTH.
+# 
+# Structure:
+#   - do: Things the LLM MUST include/do
+#   - dont: Things the LLM must NEVER do
+#   - required_fields: What info is required before processing (for constraint validation)
+#   - sample_response: Example response format (optional)
+#
+# IMPORTANT: Keep these aligned with LOCAL_FALLBACK_POLICY and Google Docs policy.
+# ===============================
+
+CATEGORY_TIPS = {
+    # ===== FULL SUPPORT CATEGORIES (need product identification) =====
+    
+    "product_issue": {
+        "label": "PRODUCT ISSUE / DEFECT",
+        "do": [
+            "Identify the product if possible from model number or description",
+            "Reference warranty policy based on customer type (residential=lifetime, commercial=2yr)",
+            "Request VIDEO evidence (preferred over photos) showing the defect",
+            "Verify PO/invoice number or proof of purchase",
+            "Confirm shipping address for replacement parts",
+            "Ensure troubleshooting steps are completed before approval",
+        ],
+        "dont": [
+            "Approve replacement without proof of purchase",
+            "Ship replacements without confirmed shipping address",
+            "Process warranty without video/photo evidence",
+            "Promise full product replacement (parts replacement is standard)",
+            "Invent warranty durations - only lifetime/2yr/1yr(limited components) exist",
+        ],
+        "required_fields": ["proof_of_purchase", "video_or_photo", "shipping_address"],
+        "sample_response": None,
+    },
+    
+    "replacement_parts": {
+        "label": "REPLACEMENT PARTS REQUEST",
+        "do": [
+            "Identify the specific part needed (cartridge, handle, hose, etc.)",
+            "Verify if under warranty (residential=lifetime, commercial=2yr, limited components=1yr)",
+            "Request VIDEO showing the issue (preferred over photos)",
+            "Verify PO/invoice number or proof of purchase",
+            "Confirm shipping address for replacement delivery",
+            "Check if it's a limited-warranty component (drains, hoses, hand-helds, hand sprays = 1yr only)",
+        ],
+        "dont": [
+            "Approve without proof of purchase",
+            "Ship without confirmed shipping address",
+            "Process without video/photo evidence of defect",
+            "Assume 1-year warranty for cartridges (cartridges get full warranty: lifetime/2yr)",
+        ],
+        "required_fields": ["proof_of_purchase", "video_or_photo", "shipping_address"],
+        "sample_response": None,
+    },
+    
+    "warranty_claim": {
+        "label": "WARRANTY CLAIM",
+        "do": [
+            "Verify warranty eligibility (purchased after Jan 2011, from authorized dealer)",
+            "Determine warranty period: residential=lifetime, commercial=2yr, limited components=1yr",
+            "Request VIDEO evidence (preferred) showing the defect",
+            "Verify PO/invoice number (invoice number is sufficient)",
+            "Ensure troubleshooting steps are completed BEFORE approval",
+            "Clarify that warranty covers PARTS replacement, not full product replacement",
+        ],
+        "dont": [
+            "Approve without proof of purchase (invoice number is sufficient)",
+            "Process without video/photo evidence",
+            "Promise full product replacement (rare, internal decision only)",
+            "Invent warranty durations like 'standard 1-year' or '2-year extended'",
+            "Ask for purchase DATE if PO/invoice number is provided (we can look it up)",
+            "Assign 2-year coverage to hoses (hoses are 1-year limited components)",
+        ],
+        "required_fields": ["proof_of_purchase", "video_or_photo", "shipping_address"],
+        "sample_response": None,
+    },
+    
+    "missing_parts": {
+        "label": "MISSING PARTS FROM ORDER",
+        "do": [
+            "Verify order number/PO number in system",
+            "Confirm exactly which parts are missing (reference packing list)",
+            "Ship missing parts immediately - no questions asked within 45 days",
+            "Acknowledge the inconvenience",
+        ],
+        "dont": [
+            "Ask for receipt/proof of purchase (we have the order record)",
+            "Ask for photos of missing parts (we know what was supposed to ship)",
+            "Delay - this should be fast resolution",
+            "Require customer to return anything",
+        ],
+        "required_fields": ["order_number"],
+        "sample_response": "We apologize for the inconvenience. We've verified your order and will ship the missing [parts] right away. You should receive them within [X] business days.",
+    },
+    
+    # ===== PRODUCT INFORMATION CATEGORIES =====
+    
+    "product_inquiry": {
+        "label": "PRODUCT INQUIRY / STOCK AVAILABILITY",
+        "do": [
+            "Provide product specifications if found",
+            "Include product page URL for real-time inventory: https://www.flussofaucets.com/products/[MODEL]-[name]/",
+            "State lead time: '5-7 business days from the day we receive the purchase order'",
+            "Translate 'lead time of 0' to 'in stock'",
+            "Mention shipping may vary for California or New York",
+        ],
+        "dont": [
+            "Ask for photos, videos, or receipts (not needed for stock inquiries)",
+            "Say 'lead time of 0 days' to customer (say 'in stock' instead)",
+            "Guess availability - direct to product page for real-time info",
+        ],
+        "required_fields": [],
+        "sample_response": "The [model] is in stock - our site will show current updated inventory: [product_url]\nLead time is about 5-7 business days from the day we receive the purchase order.",
+    },
+    
+    "installation_help": {
+        "label": "INSTALLATION HELP",
+        "do": [
+            "Provide installation guidance from product documentation",
+            "Reference installation manuals/videos if available",
+            "Identify the specific product if model number provided",
+            "Offer to send installation instructions via email",
+        ],
+        "dont": [
+            "Ask for receipts or proof of purchase (not relevant for installation help)",
+            "Require photos unless needed to identify the product",
+            "Provide incorrect installation advice - defer to official docs",
+        ],
+        "required_fields": [],
+        "sample_response": None,
+    },
+    
+    "finish_color": {
+        "label": "FINISH / COLOR INQUIRY",
+        "do": [
+            "Provide available finish options for the product",
+            "List finish codes (e.g., CP=Chrome, BN=Brushed Nickel, MB=Matte Black)",
+            "Direct to product page for visual finish samples",
+            "Clarify if certain finishes are special order or have longer lead times",
+        ],
+        "dont": [
+            "Ask for receipts or proof of purchase",
+            "Guess finish availability - check product catalog",
+            "Confuse finish codes between product lines",
+        ],
+        "required_fields": [],
+        "sample_response": None,
+    },
+    
+    # ===== INFORMATION REQUEST CATEGORIES =====
+    
+    "pricing_request": {
+        "label": "PRICING / MSRP REQUEST",
+        "do": [
+            "Provide MSRP/pricing if found in search results",
+            "Reference the specific part numbers customer asked about",
+            "If pricing not found, say we will follow up with pricing information",
+        ],
+        "dont": [
+            "Ask for product photos or receipts (not needed for pricing)",
+            "Ask for model numbers (customer already provided part numbers)",
+            "Share dealer-specific pricing with end customers",
+        ],
+        "required_fields": [],
+        "sample_response": None,
+    },
+    
+    "dealer_inquiry": {
+        "label": "DEALER / PARTNERSHIP INQUIRY",
+        "do": [
+            "Acknowledge their interest in becoming a Flusso dealer/partner",
+            "If they submitted documents (application, resale certificate), acknowledge receipt",
+            "Provide next steps for application review",
+            "Mention typical approval timeline if known",
+        ],
+        "dont": [
+            "Ask for product photos or model numbers (irrelevant)",
+            "Share confidential dealer pricing or terms before approval",
+            "Promise approval - applications are reviewed internally",
+        ],
+        "required_fields": [],
+        "sample_response": "Thank you for your interest in becoming a Flusso dealer! We've received your [application/documents] and our team will review it. You can expect to hear back within [X] business days.",
+    },
+    
+    # ===== SPECIAL HANDLING CATEGORIES =====
+    
+    "shipping_tracking": {
+        "label": "SHIPPING / TRACKING",
+        "do": [
+            "Provide tracking information if available",
+            "Reference order number/PO for lookup",
+            "For dealers: direct to self-service portal https://flussodealers.com/orderstatus/",
+            "Acknowledge their inquiry and provide status update",
+        ],
+        "dont": [
+            "Ask for product photos (not relevant for shipping)",
+            "Mention account status, credit holds, or payment issues to end customers",
+            "Share internal order processing details",
+        ],
+        "required_fields": ["order_number"],
+        "sample_response": None,
+    },
+    
+    "return_refund": {
+        "label": "RETURN / REFUND REQUEST",
+        "do": [
+            "Collect PO/order number for verification",
+            "Ask for reason for return (defective? wrong item? no longer needed?)",
+            "Request photo of product condition if defective",
+            "Reference return policy timeframes (0-45d=15%, 46-90d=25%, 91-180d=50%, 180+=no returns)",
+            "State that RGA number will be issued after verification",
+            "Mention original packaging required",
+        ],
+        "dont": [
+            "Approve return without required information",
+            "Accept returns on installed products (must go through warranty process)",
+            "Accept returns on custom/special orders or clearance items",
+            "Process returns beyond 180 days",
+        ],
+        "required_fields": ["order_number", "reason_for_return", "photo_if_defective"],
+        "sample_response": None,
+    },
+    
+    "feedback_suggestion": {
+        "label": "FEEDBACK / SUGGESTION",
+        "do": [
+            "Thank the customer for their feedback",
+            "Acknowledge their suggestion professionally",
+            "State that feedback is shared with the product team",
+        ],
+        "dont": [
+            "Ask for product photos or receipts (not relevant)",
+            "Promise that suggestions will be implemented",
+            "Dismiss or argue with feedback",
+        ],
+        "required_fields": [],
+        "sample_response": "Thank you for sharing your feedback! We appreciate you taking the time to let us know. We'll share this with our product team for consideration.",
+    },
+    
+    "general": {
+        "label": "GENERAL INQUIRY / ACCOUNT UPDATE",
+        "do": [
+            "Acknowledge the customer's request professionally",
+            "If account/address update: confirm receipt and note that records will be updated",
+            "If general question: answer directly or acknowledge you'll look into it",
+            "Keep response brief and professional",
+        ],
+        "dont": [
+            "Ask for product model numbers or photos (not product-related)",
+            "Assume this is a product support request",
+            "Overcomplicate simple administrative requests",
+        ],
+        "required_fields": [],
+        "sample_response": None,
+    },
 }
 
 # ===============================
@@ -474,7 +739,7 @@ def get_relevant_policy(
     keywords: List[str] = None
 ) -> Dict[str, Any]:
     """
-    Get relevant policy sections based on ticket context.
+    Get relevant policy sections AND category tips based on ticket context.
     
     Args:
         ticket_category: Category from routing (e.g., "warranty_claim")
@@ -487,7 +752,14 @@ def get_relevant_policy(
             "primary_section_name": str,  # Section name
             "additional_sections": [],    # Other potentially relevant sections
             "policy_requirements": [],    # Extracted requirements (what docs needed, etc.)
-            "full_policy_available": bool
+            "full_policy_available": bool,
+            "category_tips": {            # LLM behavioral guidance (NEW)
+                "label": str,
+                "do": [],
+                "dont": [],
+                "required_fields": [],
+                "sample_response": str or None
+            }
         }
     """
     if not POLICY_SECTIONS:
@@ -498,7 +770,8 @@ def get_relevant_policy(
         "primary_section_name": "",
         "additional_sections": [],
         "policy_requirements": [],
-        "full_policy_available": bool(FULL_POLICY_TEXT)
+        "full_policy_available": bool(FULL_POLICY_TEXT),
+        "category_tips": None  # Will be populated from CATEGORY_TIPS
     }
     
     # Determine which categories to look for
@@ -563,7 +836,138 @@ def get_relevant_policy(
     # Extract requirements from primary section
     result["policy_requirements"] = _extract_requirements(result["primary_section"])
     
+    # Get category tips for LLM behavioral guidance
+    result["category_tips"] = _get_category_tips(ticket_category)
+    
     return result
+
+
+def _get_category_tips(ticket_category: str) -> Dict[str, Any]:
+    """
+    Get LLM behavioral tips for a ticket category.
+    
+    Args:
+        ticket_category: Category from routing (e.g., "warranty_claim", "product_inquiry")
+    
+    Returns:
+        Dict with label, do, dont, required_fields, sample_response
+        Returns general tips if category not found.
+    """
+    if not ticket_category:
+        return CATEGORY_TIPS.get("general", {})
+    
+    cat_lower = ticket_category.lower().strip()
+    
+    # Direct match first
+    if cat_lower in CATEGORY_TIPS:
+        return CATEGORY_TIPS[cat_lower]
+    
+    # Try mapping common variations
+    category_mapping = {
+        # warranty variations
+        "warranty": "warranty_claim",
+        "warranty_claim": "warranty_claim",
+        # product issue variations
+        "product_issue": "product_issue",
+        "defect": "product_issue",
+        # replacement variations
+        "replacement_parts": "replacement_parts",
+        "replacement": "replacement_parts",
+        # missing parts variations
+        "missing_parts": "missing_parts",
+        "missing": "missing_parts",
+        # return variations
+        "return_refund": "return_refund",
+        "return": "return_refund",
+        "refund": "return_refund",
+        # shipping variations
+        "shipping_tracking": "shipping_tracking",
+        "shipping": "shipping_tracking",
+        "tracking": "shipping_tracking",
+        # pricing variations
+        "pricing_request": "pricing_request",
+        "pricing": "pricing_request",
+        # dealer variations
+        "dealer_inquiry": "dealer_inquiry",
+        "dealer": "dealer_inquiry",
+        # installation variations
+        "installation_help": "installation_help",
+        "installation": "installation_help",
+        # finish variations
+        "finish_color": "finish_color",
+        "finish": "finish_color",
+        "color": "finish_color",
+        # feedback variations
+        "feedback_suggestion": "feedback_suggestion",
+        "feedback": "feedback_suggestion",
+        # product inquiry variations
+        "product_inquiry": "product_inquiry",
+        "stock_availability": "product_inquiry",
+        # general
+        "general": "general",
+    }
+    
+    mapped_category = category_mapping.get(cat_lower, "general")
+    return CATEGORY_TIPS.get(mapped_category, CATEGORY_TIPS.get("general", {}))
+
+
+def format_category_tips_for_prompt(category_tips: Dict[str, Any], ticket_category: str = None) -> str:
+    """
+    Format category tips into a prompt section for the LLM.
+    
+    Args:
+        category_tips: Dict from CATEGORY_TIPS with label, do, dont, etc.
+        ticket_category: Original ticket category for display
+    
+    Returns:
+        Formatted string to inject into LLM prompt
+    """
+    if not category_tips:
+        return ""
+    
+    label = category_tips.get("label", ticket_category or "GENERAL")
+    do_list = category_tips.get("do", [])
+    dont_list = category_tips.get("dont", [])
+    required_fields = category_tips.get("required_fields", [])
+    sample_response = category_tips.get("sample_response")
+    
+    lines = []
+    lines.append("═══════════════════════════════════════════════════════════════════════")
+    lines.append(f"⚠️ CATEGORY: {label}")
+    lines.append("═══════════════════════════════════════════════════════════════════════")
+    lines.append("")
+    
+    # DO section
+    if do_list:
+        lines.append("✅ DO:")
+        for item in do_list:
+            lines.append(f"   • {item}")
+        lines.append("")
+    
+    # DON'T section
+    if dont_list:
+        lines.append("❌ DO NOT:")
+        for item in dont_list:
+            lines.append(f"   • {item}")
+        lines.append("")
+    
+    # Required fields
+    if required_fields:
+        lines.append("📋 REQUIRED BEFORE PROCESSING:")
+        for field in required_fields:
+            field_display = field.replace("_", " ").title()
+            lines.append(f"   • {field_display}")
+        lines.append("")
+    
+    # Sample response
+    if sample_response:
+        lines.append("📝 SAMPLE RESPONSE FORMAT:")
+        lines.append(f'   "{sample_response}"')
+        lines.append("")
+    
+    lines.append("═══════════════════════════════════════════════════════════════════════")
+    
+    return "\n".join(lines)
 
 
 def _extract_requirements(policy_text: str) -> List[str]:
